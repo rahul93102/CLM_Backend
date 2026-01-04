@@ -1,13 +1,32 @@
+# Core Django
 Django==5.0
 djangorestframework==3.14.0
 djangorestframework-simplejwt==5.3.0
-setuptools>=65.0.0
+
+# Database
 psycopg2-binary==2.9.9
+
+# CORS and utilities
 django-cors-headers==4.3.1
-boto3==1.34.22
-PyJWT==2.8.0
 python-dotenv==1.0.0
-gunicorn==21.2.0
+
+# AWS and file handling
+boto3==1.34.22
+Pillow>=10.3.0  # Python 3.13+ support starts from 10.3.0
+
+# Document processing
 python-docx==1.1.0
+
+# Authentication
+PyJWT==2.8.0
+
+# Production server
+gunicorn==21.2.0
+
+# Async tasks
 celery==5.3.6
 redis==5.0.1
+
+# Build tools
+setuptools>=65.0.0
+wheel>=0.37.0
