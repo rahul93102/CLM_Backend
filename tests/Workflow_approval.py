@@ -1,23 +1,7 @@
-#!/usr/bin/env python
-"""
-MOCKED APPROVAL WORKFLOW TEST
-Tests approval workflow with mocked email (no actual SMTP)
-Perfect for testing without real email infrastructure
-
-This demonstrates:
-1. Configurable approval rules  
-2. Approval request creation
-3. Mocked email notifications (logged as if sent)
-4. In-app notifications
-5. Approval/rejection with notifications
-6. Workflow analytics
-"""
-
 import os
 import sys
 import django
 
-# Setup Django
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'clm_backend.settings')
 django.setup()

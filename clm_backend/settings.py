@@ -144,13 +144,25 @@ if not R2_ENDPOINT_URL and R2_ACCOUNT_ID:
 R2_PUBLIC_URL = os.getenv('R2_PUBLIC_URL', '')
 
 CORS_ALLOWED_ORIGINS = [
+    # Local Development
     "http://localhost:3000",
     "http://127.0.0.1:3000",
     "http://localhost:3001",
     "http://127.0.0.1:3001",
     "http://localhost:4000",
     "http://127.0.0.1:4000",
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",
+    # Production - Render
+    "https://clm-backend-at23.onrender.com",
+    # Allow all origins (for development/testing - restrict in production)
+    "http://localhost",
+    "http://127.0.0.1",
 ]
+
+# Alternative: Allow all origins (use with caution in production)
+# CORS_ALLOW_ALL_ORIGINS = True
+
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOW_METHODS = ['DELETE', 'GET', 'OPTIONS', 'PATCH', 'POST', 'PUT']
 CORS_ALLOW_HEADERS = [
@@ -163,6 +175,7 @@ CORS_ALLOW_HEADERS = [
     'user-agent',
     'x-csrftoken',
     'x-requested-with',
+    'x-api-key',
 ]
 
 # Email Configuration - Google SMTP with App Password
