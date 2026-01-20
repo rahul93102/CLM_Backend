@@ -43,4 +43,8 @@ urlpatterns = [
     path('api/v1/analysis/', AnalysisView.as_view(), name='analysis'),
     path('api/v1/documents/', DocumentView.as_view(), name='documents'),
     path('api/v1/generation/', GenerationView.as_view(), name='generation'),
+    # NDA Generation API Endpoints
+    path('api/nda/', include('nda.urls')),
+    # SignNow E-Signature API Endpoints
+    path('api/', include('contracts.signnow_urls')),
 ]

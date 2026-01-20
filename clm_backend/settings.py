@@ -48,6 +48,9 @@ MIDDLEWARE = [
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
+    'clm_backend.middleware.TenantIsolationMiddleware',
+    'clm_backend.middleware.AuditLoggingMiddleware',
+    'clm_backend.middleware.PIIProtectionLoggingMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
 

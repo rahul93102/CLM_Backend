@@ -14,9 +14,8 @@ print(f"GEMINI_API_KEY value: {settings.GEMINI_API_KEY[:20] if settings.GEMINI_A
 
 # Try to import and use
 try:
-    import google.generativeai as genai
-    print(f"✓ google.generativeai imported successfully")
-    
+    import google.genai as genai
+    print(f"✓ google.genai imported successfully")
     if settings.GEMINI_API_KEY:
         genai.configure(api_key=settings.GEMINI_API_KEY)
         print(f"✓ Gemini configured")

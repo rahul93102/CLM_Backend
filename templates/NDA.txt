@@ -1,0 +1,72 @@
+NON-DISCLOSURE AGREEMENT (NDA)  
+ 
+1. THE PARTIES. This Non-Disclosure Agreement, hereinafter known as the “Agreement,” 
+created this __________________, is by and between 
+_____________________________________, hereinafter known as “1st Party,” and 
+_____________________________________, hereinafter known as “2nd Party,” and 
+collectively known as the “Parties.” 
+ 
+WHEREAS, this Agreement is created for the purpose of preventing the unauthorized 
+disclosure of the confidential and proprietary information (the “Confidential Information”). 
+The Parties agree as follows: 
+ 
+2. AGREEMENT TYPE. Check one (1): 
+ 
+☐ - Unilateral – This Agreement shall be Unilateral, whereas 1st Party shall have sole 
+ownership of the Confidential Information with 2nd Party being prohibited from disclosing 
+the Confidential Information to be released by the 1st Party. 
+ 
+☐ - Mutual – This Agreement shall be Mutual, whereas the Parties shall be prohibited from 
+disclosing the Confidential Information that is to be shared between one another. 
+ 
+3. RELATIONSHIP. 1st Party’s relationship to 2nd Party can be described as 
+_____________________________________, and 2nd Party’s relationship to 1st Party can 
+be described as _____________________________________. 
+ 
+4. DEFINITION OF CONFIDENTIAL INFORMATION. For the purposes of this Agreement, 
+“Confidential Information” shall include, but not be limited to, documents, records, data, 
+drawings, models, apparatus, sketches, designs, schedules, product plans, marketing plans, 
+technical procedures, manufacturing processes, analyses, compilations, studies, software, 
+prototypes, samples, formulas, methodologies, formulations, product developments, patent 
+applications, know-how, experimental results, specifications, and other business information 
+relating to the Party’s business, assets, operations, or contracts furnished to the other Party 
+and/or the other Party’s affiliates, employees, officers, owners, agents, consultants, or 
+representatives in the course of their work contemplated in this Agreement, regardless of 
+whether such Confidential Information has been expressly designated as confidential or 
+proprietary. Confidential Information also includes any and all work products, studies, and 
+other materials prepared by or in the possession or control of the other Party, which contain, 
+include, refer to, or otherwise reflect or are generated from any Confidential Information. 
+ 
+However, Confidential Information does not include information that is: a) generally available 
+to the public, b) widely used practices and/or algorithms, c) rightfully in the possession of the 
+
+
+Page 2 of 2 
+Parties prior to signing this Agreement, and d) independently developed or created without 
+the use of any of the provided Confidential Information. 
+5. OBLIGATIONS. The obligations of the Parties shall be to hold and maintain the Confidential
+Information in the strictest of confidence at all times and to their agents, employees,
+representatives, affiliates, and any other individual or entity that is on a “need to know”
+basis. If any such Confidential Information shall reach a third (3rd) party, or become public,
+all liability will be on the Party that is responsible. Neither Party shall, without the written
+approval of the other Party, publish, copy, or use the Confidential Information for their sole
+benefit. If requested, either Party shall be bound to return any and all materials to the
+Requesting Party within seven (7) days. This Section shall not apply to the 1st Party if this
+Agreement is Unilateral as marked in Section 2.
+6. TIME FRAME. The bounded Party’s(ies’) duty to hold the Confidential Information in
+confidence shall remain in effect until such information no longer qualifies as a trade secret
+or written notice is given releasing such Party from this Agreement.
+7. INTEGRATION. This Agreement expresses the complete understanding of the Parties with
+respect to the subject matter and supersedes all prior proposals, agreements,
+representations, and understandings. This Agreement may not be amended except in
+writing with the acknowledgment of the Parties.
+8. SEVERABILITY. If a court finds that any provision of this Agreement is invalid or
+unenforceable, the remainder of this Agreement shall be interpreted so as best to affect the
+intent of the Parties.
+9. ENFORCEMENT. The Parties acknowledge and agree that due to the unique and sensitive
+nature of the Confidential Information, any breach of this Agreement would cause
+irreparable harm for which damages and/or equitable relief may be sought. The harmed
+Party in this Agreement shall be entitled to all remedies available at law.
+10. GOVERNING LAW. This Agreement shall be governed under the laws in the State of
+________________________.WITNESS WHEREOF, the parties hereto have executed this Agreement as of the date
+written below.________________________ ________________________ _________________ 1st Party’s Printed Name  1st Party’s Signature  Date ________________________ ________________________ _________________ 2nd Party’s Printed Name   2nd Party’s Signature Date

@@ -188,6 +188,46 @@ class AdminViewSet(viewsets.ViewSet):
     
     permission_classes = [AllowAny]  # Protected by auth in production
     
+    # ==================== ADMIN ACCESS CONTROL ====================
+    
+    @action(detail=False, methods=['get'], url_path='access')
+    def check_access(self, request):
+        """GET /api/v1/admin/access/ - Admin panel access with authorization check"""
+        try:
+            # Authorization check: User must be superuser
+            if not request.user or not hasattr(request.user, 'is_superuser'):
+                logger.warning(f"Unauthorized admin access attempt from {request.user}")
+                return Response(
+                    {'error': 'Unauthorized', 'status': 'forbidden'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+            
+            if not request.user.is_superuser:
+                logger.warning(f"Non-admin user {request.user.user_id} attempted admin access")
+                return Response(
+                    {'error': 'Admin access required', 'status': 'forbidden'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+            
+            logger.info(f"Admin access granted to {request.user.user_id}")
+            
+            # Return admin dashboard overview
+            return Response({
+                'status': 'authorized',
+                'user_id': str(request.user.user_id),
+                'email': request.user.email,
+                'is_superuser': True,
+                'message': 'Admin access granted',
+                'timestamp': timezone.now().isoformat()
+            }, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            logger.error(f"Admin access error: {str(e)}", exc_info=True)
+            return Response(
+                {'error': 'Access check failed', 'status': 'error'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+    
     # ==================== DASHBOARD ====================
     
     @action(detail=False, methods=['get'])

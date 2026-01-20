@@ -132,6 +132,10 @@ class Contract(models.Model):
     last_edited_by = models.UUIDField(blank=True, null=True, help_text='User ID who last edited')
     description = models.TextField(blank=True, null=True, help_text='Contract description')
     metadata = models.JSONField(default=dict, help_text='Additional metadata')
+    clauses = models.JSONField(default=list, help_text='List of contract clauses and constraints')
+    signed = models.JSONField(default=dict, help_text='Signature information from SignNow with signer names')
+    signed_pdf = models.BinaryField(null=True, blank=True, help_text='Signed PDF from SignNow with user signature')
+    signnow_document_id = models.CharField(max_length=255, null=True, blank=True, help_text='SignNow document ID')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     
@@ -325,3 +329,251 @@ class WorkflowLog(models.Model):
     
     def __str__(self):
         return f"{self.contract.title} - {self.action} at {self.timestamp}"
+
+# SignNow E-Signature Models
+
+class SignNowCredential(models.Model):
+    """
+    OAuth 2.0 credentials for SignNow service account (singleton)
+    Stores the service account's OAuth tokens for API authentication
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    
+    # OAuth Token Fields
+    access_token = models.TextField(help_text='Current OAuth access token')
+    refresh_token = models.TextField(help_text='OAuth refresh token for renewing access')
+    token_expires_at = models.DateTimeField(help_text='When the access token expires')
+    
+    # Service Account Identity
+    client_id = models.CharField(max_length=500, help_text='SignNow OAuth client ID')
+    client_secret = models.CharField(max_length=500, help_text='SignNow OAuth client secret')
+    account_name = models.CharField(max_length=255, help_text='Service account display name')
+    account_id = models.CharField(max_length=255, help_text='SignNow service account ID')
+    
+    # Metadata
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    last_refreshed_at = models.DateTimeField(null=True, blank=True, help_text='Last token refresh time')
+    
+    class Meta:
+        db_table = 'signnow_credentials'
+        verbose_name_plural = 'SignNow Credentials'
+    
+    def __str__(self):
+        return f"SignNow Service Account: {self.account_name}"
+
+
+class ESignatureContract(models.Model):
+    """
+    Maps a CLM Contract to a SignNow document for e-signature workflow
+    """
+    STATUS_CHOICES = [
+        ('draft', 'Draft'),
+        ('sent', 'Sent for Signature'),
+        ('in_progress', 'In Progress'),
+        ('completed', 'Completed'),
+        ('declined', 'Declined'),
+    ]
+    
+    SIGNING_ORDER_CHOICES = [
+        ('sequential', 'Sequential'),
+        ('parallel', 'Parallel'),
+    ]
+    
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    contract = models.OneToOneField(
+        Contract,
+        on_delete=models.CASCADE,
+        related_name='esignature_contract',
+        help_text='Associated CLM contract'
+    )
+    
+    # SignNow Document Reference
+    signnow_document_id = models.CharField(
+        max_length=255,
+        unique=True,
+        db_index=True,
+        help_text='SignNow document ID'
+    )
+    
+    # Signing Workflow
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default='draft',
+        db_index=True,
+        help_text='Current signing status'
+    )
+    signing_order = models.CharField(
+        max_length=20,
+        choices=SIGNING_ORDER_CHOICES,
+        default='parallel',
+        help_text='Sequential or parallel signing'
+    )
+    
+    # Timeline
+    sent_at = models.DateTimeField(null=True, blank=True, help_text='When sent for signature')
+    completed_at = models.DateTimeField(null=True, blank=True, help_text='When all signers completed')
+    expires_at = models.DateTimeField(null=True, blank=True, help_text='Signing deadline')
+    last_status_check_at = models.DateTimeField(null=True, blank=True, help_text='Last status polling time')
+    
+    # Storage References
+    original_r2_key = models.CharField(
+        max_length=500,
+        help_text='Original contract PDF in R2'
+    )
+    executed_r2_key = models.CharField(
+        max_length=500,
+        null=True,
+        blank=True,
+        help_text='Signed contract PDF in R2'
+    )
+    
+    # Metadata
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        db_table = 'esignature_contracts'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['signnow_document_id']),
+            models.Index(fields=['status']),
+            models.Index(fields=['contract', 'status']),
+        ]
+    
+    def __str__(self):
+        return f"ESignature: {self.contract.title} ({self.status})"
+
+
+class Signer(models.Model):
+    """
+    Email-based signer for an e-signature contract
+    Signers are identified by email, not user accounts
+    """
+    STATUS_CHOICES = [
+        ('invited', 'Invited'),
+        ('viewed', 'Viewed'),
+        ('in_progress', 'In Progress'),
+        ('signed', 'Signed'),
+        ('declined', 'Declined'),
+    ]
+    
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    esignature_contract = models.ForeignKey(
+        ESignatureContract,
+        on_delete=models.CASCADE,
+        related_name='signers',
+        help_text='Associated e-signature contract'
+    )
+    
+    # Signer Identity (Email-based, no user account)
+    email = models.EmailField(help_text='Signer email address')
+    name = models.CharField(max_length=255, help_text='Signer full name')
+    
+    # Signing Order
+    signing_order = models.IntegerField(help_text='Order in signing sequence (1-based)')
+    
+    # Status Tracking
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default='invited',
+        db_index=True,
+        help_text='Current signing status'
+    )
+    has_signed = models.BooleanField(default=False, help_text='Whether signer completed')
+    signed_at = models.DateTimeField(null=True, blank=True, help_text='When signer completed')
+    
+    # Signing URL Management
+    signing_url = models.TextField(null=True, blank=True, help_text='Embedded signing URL')
+    signing_url_expires_at = models.DateTimeField(null=True, blank=True, help_text='URL expiration (24h)')
+    
+    # Decline Tracking
+    declined_reason = models.TextField(null=True, blank=True, help_text='Reason if declined')
+    
+    # Metadata
+    invited_at = models.DateTimeField(auto_now_add=True, help_text='When invitation sent')
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        db_table = 'signers'
+        ordering = ['signing_order', 'email']
+        unique_together = [('esignature_contract', 'email')]
+        indexes = [
+            models.Index(fields=['esignature_contract', 'status']),
+            models.Index(fields=['email']),
+        ]
+    
+    def __str__(self):
+        return f"{self.email} ({self.status}) - {self.esignature_contract.contract.title}"
+
+
+class SigningAuditLog(models.Model):
+    """
+    Immutable audit trail of all e-signature events
+    """
+    EVENT_CHOICES = [
+        ('invite_sent', 'Invitation Sent'),
+        ('document_viewed', 'Document Viewed'),
+        ('signing_started', 'Signing Started'),
+        ('signing_completed', 'Signing Completed'),
+        ('signing_declined', 'Signing Declined'),
+        ('status_checked', 'Status Checked'),
+        ('document_downloaded', 'Document Downloaded'),
+    ]
+    
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    esignature_contract = models.ForeignKey(
+        ESignatureContract,
+        on_delete=models.CASCADE,
+        related_name='audit_logs',
+        help_text='Associated e-signature contract'
+    )
+    signer = models.ForeignKey(
+        Signer,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='audit_logs',
+        help_text='Associated signer (if applicable)'
+    )
+    
+    # Event Details
+    event = models.CharField(
+        max_length=50,
+        choices=EVENT_CHOICES,
+        db_index=True,
+        help_text='Event type'
+    )
+    message = models.TextField(help_text='Event description')
+    
+    # Status Transitions
+    old_status = models.CharField(max_length=20, null=True, blank=True, help_text='Previous status')
+    new_status = models.CharField(max_length=20, null=True, blank=True, help_text='New status')
+    
+    # SignNow Response
+    signnow_response = models.JSONField(
+        default=dict,
+        null=True,
+        blank=True,
+        help_text='Full SignNow API response'
+    )
+    
+    # Timestamp (immutable)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    
+    class Meta:
+        db_table = 'signing_audit_logs'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['esignature_contract', 'created_at']),
+            models.Index(fields=['event', 'created_at']),
+        ]
+        # Make all fields read-only after creation
+        permissions = [
+            ('view_signing_audit_log', 'Can view signing audit logs'),
+        ]
+    
+    def __str__(self):
+        return f"{self.event} - {self.esignature_contract.contract.title} at {self.created_at}"

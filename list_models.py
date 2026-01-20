@@ -10,11 +10,8 @@ django.setup()
 
 from django.conf import settings
 
-import google.generativeai as genai
-genai.configure(api_key=settings.GEMINI_API_KEY)
+import google.genai as genai
 
-models = genai.list_models()
-print("Available models:")
-for model in models:
-    if 'generateContent' in model.supported_generation_methods:
-        print(f"  - {model.name}")
+client = genai.Client(api_key=settings.GEMINI_API_KEY)
+# Note: Model listing API may differ in new google.genai
+print("Using google.genai for model access")
