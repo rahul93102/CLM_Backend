@@ -9,7 +9,8 @@ from .template_views import (
     TemplateTypeSummaryView,
     TemplateTypeDetailView,
     CreateTemplateFromTypeView,
-    ValidateTemplateDataView
+    ValidateTemplateDataView,
+    TemplateFileView
 )
 from .pdf_views import (
     ContractPDFDownloadView,
@@ -32,6 +33,7 @@ urlpatterns = [
     path('templates/summary/', TemplateTypeSummaryView.as_view(), name='template-summary'),
     path('templates/create-from-type/', CreateTemplateFromTypeView.as_view(), name='create-template-from-type'),
     path('templates/validate/', ValidateTemplateDataView.as_view(), name='validate-template-data'),
+    path('templates/files/<str:template_type>/', TemplateFileView.as_view(), name='template-file'),
     
     # ========== PDF GENERATION ENDPOINTS ==========
     path('<uuid:template_id>/download-pdf/', ContractPDFDownloadView.as_view(), name='contract-pdf-download'),

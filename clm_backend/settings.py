@@ -74,11 +74,18 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'clm_backend.wsgi.application'
 
-# Database configuration (Supabase/PostgreSQL only)
+# Database configuration
+DB_ENGINE = os.getenv('DB_ENGINE', 'django.db.backends.sqlite3')
 DATABASES = {
     'default': {
-        'ENGINE': os.getenv('DB_ENGINE', 'django.db.backends.postgresql'),
-        'NAME': os.getenv('DB_NAME', 'postgres'),
+        'ENGINE': DB_ENGINE,
+        'NAME': os.getenv('DB_NAME', 'db.sqlite3') if DB_ENGINE == 'django.db.backends.sqlite3' else os.getenv('DB_NAME', 'postgres'),
+    }
+}
+
+# For PostgreSQL, add additional configuration
+if DB_ENGINE != 'django.db.backends.sqlite3':
+    DATABASES['default'].update({
         'USER': os.getenv('DB_USER', ''),
         'PASSWORD': os.getenv('DB_PASSWORD', ''),
         'HOST': os.getenv('DB_HOST', ''),
@@ -86,8 +93,7 @@ DATABASES = {
         'OPTIONS': {
             'sslmode': os.getenv('DB_SSLMODE', 'require'),
         },
-    }
-}
+    })
 
 AUTH_PASSWORD_VALIDATORS = [
     {'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},

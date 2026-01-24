@@ -16,6 +16,8 @@ from .template_definitions import (
 from .models import ContractTemplate
 from .serializers import ContractTemplateSerializer
 import uuid
+import os
+from django.conf import settings
 
 
 class TemplateTypesView(APIView):
@@ -345,3 +347,90 @@ class ValidateTemplateDataView(APIView):
                 'fields_extra': len([f for f in provided if f not in required])
             }
         }, status=status.HTTP_200_OK)
+
+
+class TemplateFileView(APIView):
+    """
+    GET /api/v1/templates/files/{template_type}/
+    Get the template file content for a specific template type
+    
+    Path Parameters:
+        template_type: NDA, MSA, EMPLOYMENT, SERVICE_AGREEMENT, etc.
+    
+    Response:
+    {
+        "success": true,
+        "template_type": "NDA",
+        "filename": "NDA.txt",
+        "content": "NON-DISCLOSURE AGREEMENT...",
+        "size": 2458
+    }
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request, template_type):
+        """Get template file content"""
+        # Validate template type
+        template_def = get_template_type(template_type)
+        if not template_def:
+            return Response({
+                'success': False,
+                'error': f'Unknown template type: {template_type}',
+                'available_types': list(TEMPLATE_TYPES.keys())
+            }, status=status.HTTP_404_NOT_FOUND)
+        
+        # Map template types to file names
+        template_file_map = {
+            'NDA': 'NDA.txt',
+            'MSA': 'MSA.txt',
+            'EMPLOYMENT': 'Employement-Agreement.txt',
+            'SERVICE_AGREEMENT': 'Service_Agreement.txt',
+            'AGENCY_AGREEMENT': 'Agency-Agreement.txt',
+            'PROPERTY_MANAGEMENT': 'Property_management_contract.txt',
+            'PURCHASE_AGREEMENT': 'Purchase_Agreement.txt',
+        }
+        
+        filename = template_file_map.get(template_type)
+        if not filename:
+            return Response({
+                'success': False,
+                'error': f'Template file not found for: {template_type}'
+            }, status=status.HTTP_404_NOT_FOUND)
+        
+        # Build file path
+        template_path = os.path.join(
+            settings.BASE_DIR, 
+            'templates', 
+            filename
+        )
+        
+        # Check if file exists
+        if not os.path.exists(template_path):
+            return Response({
+                'success': False,
+                'error': f'Template file not found at: {filename}',
+                'expected_path': template_path
+            }, status=status.HTTP_404_NOT_FOUND)
+        
+        try:
+            # Read file content
+            with open(template_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            file_size = os.path.getsize(template_path)
+            
+            return Response({
+                'success': True,
+                'template_type': template_type,
+                'filename': filename,
+                'content': content,
+                'size': file_size,
+                'display_name': template_def['display_name'],
+                'description': template_def['description']
+            }, status=status.HTTP_200_OK)
+        
+        except Exception as e:
+            return Response({
+                'success': False,
+                'error': f'Failed to read template file: {str(e)}'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
