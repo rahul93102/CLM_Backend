@@ -384,7 +384,8 @@ class TemplateFileView(APIView):
             'NDA': 'NDA.txt',
             'MSA': 'MSA.txt',
             'EMPLOYMENT': 'Employement-Agreement.txt',
-            'SERVICE_AGREEMENT': 'Service_Agreement.txt',
+            # Repo currently uses these filenames under CLM_Backend/templates
+            'SERVICE_AGREEMENT': 'Agency-Agreement.txt',
             'AGENCY_AGREEMENT': 'Agency-Agreement.txt',
             'PROPERTY_MANAGEMENT': 'Property_management_contract.txt',
             'PURCHASE_AGREEMENT': 'Purchase_Agreement.txt',
@@ -404,7 +405,28 @@ class TemplateFileView(APIView):
             filename
         )
         
-        # Check if file exists
+        # Check if file exists; if not, attempt a best-effort fallback
+        if not os.path.exists(template_path):
+            templates_dir = os.path.join(settings.BASE_DIR, 'templates')
+            if os.path.isdir(templates_dir):
+                candidates = [f for f in os.listdir(templates_dir) if f.lower().endswith('.txt')]
+                # Try to match by template_type keyword
+                preferred = None
+                for cand in candidates:
+                    c = cand.lower()
+                    if template_type.lower() in c:
+                        preferred = cand
+                        break
+                # Common fallbacks
+                if not preferred and template_type == 'MSA':
+                    for cand in candidates:
+                        if 'service' in cand.lower() or 'agreement' in cand.lower():
+                            preferred = cand
+                            break
+                if preferred:
+                    filename = preferred
+                    template_path = os.path.join(settings.BASE_DIR, 'templates', filename)
+
         if not os.path.exists(template_path):
             return Response({
                 'success': False,

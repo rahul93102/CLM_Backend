@@ -3,7 +3,7 @@
 # Quick verification that all password reset features are implemented and working
 # This script checks the key files and confirms the implementation
 
-BASE_URL="https://clm-backend-at23.onrender.com"
+BASE_URL="http://127.0.0.1:8000"
 PROJECT_ROOT="/Users/vishaljha/CLM_Backend"
 
 GREEN='\033[0;32m'

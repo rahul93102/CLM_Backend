@@ -163,7 +163,7 @@ CORS_ALLOWED_ORIGINS = [
     "http://localhost:8000",
     "http://127.0.0.1:8000",
     # Production - Render
-    "https://clm-backend-at23.onrender.com",
+    "http://127.0.0.1:8000",
     # Allow all origins (for development/testing - restrict in production)
     "http://localhost",
     "http://127.0.0.1",

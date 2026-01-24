@@ -541,7 +541,7 @@
   "variable": [
     {
       "key": "base_url",
-      "value": "https://clm-backend-at23.onrender.com",
+      "value": "http://127.0.0.1:8000",
       "type": "string"
     },
     {

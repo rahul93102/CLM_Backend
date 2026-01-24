@@ -3,7 +3,7 @@
 # Week 1 Authentication - Complete Test Suite for Render API
 # This script tests all 13 authentication endpoints
 
-BASE_URL="https://clm-backend-at23.onrender.com"
+BASE_URL="http://127.0.0.1:8000"
 TIMESTAMP=$(date +%s)
 EMAIL="test_user_${TIMESTAMP}@example.com"
 PASSWORD="TestPassword123!"

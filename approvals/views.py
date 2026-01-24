@@ -8,6 +8,9 @@ class ApprovalViewSet(viewsets.ModelViewSet):
     serializer_class = ApprovalSerializer
     permission_classes = [IsAuthenticated]
     lookup_field = 'id'
+
+    def get_queryset(self):
+        return ApprovalModel.objects.filter(tenant_id=self.request.user.tenant_id)
     
     def perform_create(self, serializer):
         serializer.save(tenant_id=self.request.user.tenant_id)
