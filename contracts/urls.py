@@ -8,13 +8,13 @@ from .template_views import (
     TemplateTypesView,
     TemplateTypeSummaryView,
     TemplateTypeDetailView,
+    TemplateFileView,
     CreateTemplateFromTypeView,
     ValidateTemplateDataView,
-    TemplateFileView,
-    TemplateFilesView,
-    TemplateFileContentView,
-    TemplateMyFilesView,
+    UserTemplatesView,
+    DeleteTemplateView
 )
+from .template_file_views import TemplateFileContentView, TemplateFilesView, TemplateMyFilesView
 from .pdf_views import (
     ContractPDFDownloadView,
     ContractBatchPDFGenerationView,
@@ -33,13 +33,16 @@ urlpatterns = [
     # ========== TEMPLATE MANAGEMENT ENDPOINTS ==========
     path('templates/types/', TemplateTypesView.as_view(), name='template-types'),
     path('templates/types/<str:template_type>/', TemplateTypeDetailView.as_view(), name='template-type-detail'),
+    path('templates/files/', TemplateFilesView.as_view(), name='template-files-list'),
+    path('templates/files/mine/', TemplateMyFilesView.as_view(), name='template-files-mine'),
+    path('templates/files/content/<str:filename>/', TemplateFileContentView.as_view(), name='template-files-content'),
     path('templates/summary/', TemplateTypeSummaryView.as_view(), name='template-summary'),
     path('templates/create-from-type/', CreateTemplateFromTypeView.as_view(), name='create-template-from-type'),
     path('templates/validate/', ValidateTemplateDataView.as_view(), name='validate-template-data'),
-    path('templates/files/', TemplateFilesView.as_view(), name='template-files'),
-    path('templates/files/mine/', TemplateMyFilesView.as_view(), name='template-files-mine'),
-    path('templates/files/content/<str:filename>/', TemplateFileContentView.as_view(), name='template-file-content'),
-    path('templates/files/<str:template_type>/', TemplateFileView.as_view(), name='template-file'),
+    
+    # User template management (authenticated)
+    path('templates/user/', UserTemplatesView.as_view(), name='user-templates'),
+    path('templates/<uuid:template_id>/', DeleteTemplateView.as_view(), name='delete-template'),
     
     # ========== PDF GENERATION ENDPOINTS ==========
     path('<uuid:template_id>/download-pdf/', ContractPDFDownloadView.as_view(), name='contract-pdf-download'),
@@ -61,5 +64,8 @@ urlpatterns = [
     
     # ========== HEALTH CHECK ENDPOINT ==========
     path('health/', views.HealthCheckView.as_view(), name='health-check'),
+
+    # Keep any existing template_type-based route last to avoid swallowing the above
+    path('templates/files/<str:template_type>/', TemplateFileView.as_view(), name='template-file'),
 ]
 

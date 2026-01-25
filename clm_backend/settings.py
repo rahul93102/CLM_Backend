@@ -38,6 +38,7 @@ INSTALLED_APPS = [
     'rules',
     'approvals',
     'tenants',
+    'calendar_events',
 ]
 
 MIDDLEWARE = [
