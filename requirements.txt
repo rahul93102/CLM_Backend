@@ -20,6 +20,9 @@ requests==2.32.3
 Pillow==10.1.0
 pytesseract==0.3.10
 
+# PDF/HTML templating
+Jinja2==3.1.4
+
 # Embeddings (Voyage Law-2 + similarity)
 numpy
 voyageai

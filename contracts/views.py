@@ -119,6 +119,7 @@ class ContractListCreateView(APIView):
                 tenant_id=request.user.tenant_id,
                 title=title,
                 r2_key=r2_key,
+                document_r2_key=r2_key,
                 status=contract_status,
                 created_by=request.user.user_id,
                 counterparty=counterparty,
@@ -3509,12 +3510,12 @@ def upload_contract(request):
         contract = get_object_or_404(Contract, id=contract_id)
         
         # Check if already has e-signature record
-        if hasattr(contract, 'esignature'):
+        if hasattr(contract, 'esignature_contract'):
             return Response(
                 {
                     "error": "Contract already uploaded for signing",
-                    "signnow_document_id": contract.esignature.signnow_document_id,
-                    "status": contract.esignature.status
+                    "signnow_document_id": contract.esignature_contract.signnow_document_id,
+                    "status": contract.esignature_contract.status
                 },
                 status=status.HTTP_400_BAD_REQUEST
             )
@@ -3658,7 +3659,7 @@ def send_for_signature(request):
         esig.status = 'sent'
         esig.signing_order = signing_order
         esig.sent_at = timezone.now()
-        esig.expires_at = timezone.now() + timezone.timedelta(days=expires_in_days)
+        esig.expires_at = timezone.now() + timedelta(days=expires_in_days)
         esig.signing_request_data = {
             "signers": signers_data,
             "signing_order": signing_order,
@@ -3747,7 +3748,7 @@ def get_signing_url(request, contract_id):
             )
             
             signer.signing_url = link_response.get("signing_link")
-            signer.signing_url_expires_at = timezone.now() + timezone.timedelta(hours=24)
+            signer.signing_url_expires_at = timezone.now() + timedelta(hours=24)
             signer.save()
         
         return Response(
@@ -3908,7 +3909,7 @@ def get_executed_document(request, contract_id):
     try:
         api_service = get_signnow_api_service()
         # Get e-signature contract
-        esig = get_object_or_404(ESignatureContract, id=contract_id)
+        esig = get_object_or_404(ESignatureContract, contract_id=contract_id)
         
         # If status is not completed, re-poll first
         if esig.status != "completed":
@@ -3940,8 +3941,10 @@ def get_executed_document(request, contract_id):
         
         # Store immutable copy if not already stored
         if not esig.executed_r2_key:
+            from django.core.files.base import ContentFile
+
             r2_key = f"signed-contracts/{contract_id}_executed.pdf"
-            default_storage.save(r2_key, pdf_content)
+            default_storage.save(r2_key, ContentFile(pdf_content))
             esig.executed_r2_key = r2_key
             esig.save()
         
@@ -3957,9 +3960,12 @@ def get_executed_document(request, contract_id):
         
         # Return PDF file
         from django.http import FileResponse
+        from io import BytesIO
         filename = f"signed_contract_{contract_id}.pdf"
+        pdf_file = BytesIO(pdf_content)
+        pdf_file.seek(0)
         return FileResponse(
-            pdf_content,
+            pdf_file,
             as_attachment=True,
             filename=filename,
             content_type='application/pdf'
@@ -6419,12 +6425,12 @@ def upload_contract(request):
         contract = get_object_or_404(Contract, id=contract_id)
         
         # Check if already has e-signature record
-        if hasattr(contract, 'esignature'):
+        if hasattr(contract, 'esignature_contract'):
             return Response(
                 {
                     "error": "Contract already uploaded for signing",
-                    "signnow_document_id": contract.esignature.signnow_document_id,
-                    "status": contract.esignature.status
+                    "signnow_document_id": contract.esignature_contract.signnow_document_id,
+                    "status": contract.esignature_contract.status
                 },
                 status=status.HTTP_400_BAD_REQUEST
             )
@@ -6568,7 +6574,7 @@ def send_for_signature(request):
         esig.status = 'sent'
         esig.signing_order = signing_order
         esig.sent_at = timezone.now()
-        esig.expires_at = timezone.now() + timezone.timedelta(days=expires_in_days)
+        esig.expires_at = timezone.now() + timedelta(days=expires_in_days)
         esig.signing_request_data = {
             "signers": signers_data,
             "signing_order": signing_order,
@@ -6657,7 +6663,7 @@ def get_signing_url(request, contract_id):
             )
             
             signer.signing_url = link_response.get("signing_link")
-            signer.signing_url_expires_at = timezone.now() + timezone.timedelta(hours=24)
+            signer.signing_url_expires_at = timezone.now() + timedelta(hours=24)
             signer.save()
         
         return Response(
@@ -6818,7 +6824,7 @@ def get_executed_document(request, contract_id):
     try:
         api_service = get_signnow_api_service()
         # Get e-signature contract
-        esig = get_object_or_404(ESignatureContract, id=contract_id)
+        esig = get_object_or_404(ESignatureContract, contract_id=contract_id)
         
         # If status is not completed, re-poll first
         if esig.status != "completed":
@@ -6850,8 +6856,10 @@ def get_executed_document(request, contract_id):
         
         # Store immutable copy if not already stored
         if not esig.executed_r2_key:
+            from django.core.files.base import ContentFile
+
             r2_key = f"signed-contracts/{contract_id}_executed.pdf"
-            default_storage.save(r2_key, pdf_content)
+            default_storage.save(r2_key, ContentFile(pdf_content))
             esig.executed_r2_key = r2_key
             esig.save()
         
@@ -6867,9 +6875,12 @@ def get_executed_document(request, contract_id):
         
         # Return PDF file
         from django.http import FileResponse
+        from io import BytesIO
         filename = f"signed_contract_{contract_id}.pdf"
+        pdf_file = BytesIO(pdf_content)
+        pdf_file.seek(0)
         return FileResponse(
-            pdf_content,
+            pdf_file,
             as_attachment=True,
             filename=filename,
             content_type='application/pdf'

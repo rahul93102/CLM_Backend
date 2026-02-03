@@ -17,12 +17,29 @@ class R2StorageService:
     """
     
     def __init__(self):
+        required = {
+            'R2_ENDPOINT_URL': getattr(settings, 'R2_ENDPOINT_URL', ''),
+            'R2_ACCESS_KEY_ID': getattr(settings, 'R2_ACCESS_KEY_ID', ''),
+            'R2_SECRET_ACCESS_KEY': getattr(settings, 'R2_SECRET_ACCESS_KEY', ''),
+            'R2_BUCKET_NAME': getattr(settings, 'R2_BUCKET_NAME', ''),
+        }
+        missing = [k for k, v in required.items() if not str(v or '').strip()]
+        if missing:
+            raise Exception(
+                'Cloudflare R2 is not configured. Missing: ' + ', '.join(missing)
+            )
+
         self.client = boto3.client(
             's3',
             endpoint_url=settings.R2_ENDPOINT_URL,
             aws_access_key_id=settings.R2_ACCESS_KEY_ID,
             aws_secret_access_key=settings.R2_SECRET_ACCESS_KEY,
-            config=Config(signature_version='s3v4'),
+            config=Config(
+                signature_version='s3v4',
+                connect_timeout=int(getattr(settings, 'R2_CONNECT_TIMEOUT', 5) or 5),
+                read_timeout=int(getattr(settings, 'R2_READ_TIMEOUT', 30) or 30),
+                retries={'max_attempts': 3, 'mode': 'standard'},
+            ),
             region_name='auto'
         )
         self.bucket_name = settings.R2_BUCKET_NAME

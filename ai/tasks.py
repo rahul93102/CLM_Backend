@@ -7,14 +7,30 @@ from django.utils import timezone
 from ai.models import DraftGenerationTask
 from repository.models import DocumentChunk
 from repository.embeddings_service import VoyageEmbeddingsService
-import google.generativeai as genai
 from django.conf import settings
 import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# Configure Gemini
-genai.configure(api_key=settings.GEMINI_API_KEY)
+def _get_genai():
+    """Lazily import/configure google.generativeai.
+    
+    This prevents Django startup from crashing on environments where protobuf/upb
+    wheels are not compatible (e.g., some Python 3.14 setups).
+    """
+    try:
+        import google.generativeai as genai  # type: ignore
+
+        api_key = getattr(settings, 'GEMINI_API_KEY', None)
+        if api_key:
+            genai.configure(api_key=api_key)
+        return genai
+    except Exception as e:
+        raise RuntimeError(
+            'Failed to import/configure google.generativeai. '
+            'If you are on an unsupported Python version, use Python 3.11/3.12 '
+            'or disable AI features for local development.'
+        ) from e
 
 
 @shared_task(bind=True, max_retries=3)
@@ -108,6 +124,7 @@ def generate_draft_async(self, task_id: str, tenant_id: str, contract_type: str,
             logger.warning(f"RAG context building failed: {e}")
         
         # Step 3: Generate draft with Gemini
+        genai = _get_genai()
         model = genai.GenerativeModel('gemini-2.0-flash')
         
         # Build prompt

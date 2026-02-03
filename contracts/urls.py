@@ -4,6 +4,7 @@ URL configuration for contracts app - Consolidated
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from . import views
+from . import firma_views
 from .template_views import (
     TemplateTypesView,
     TemplateTypeSummaryView,
@@ -33,8 +34,6 @@ router.register(r'contracts', views.ContractViewSet, basename='contract')
 router.register(r'generation-jobs', views.GenerationJobViewSet, basename='generation-job')
 
 urlpatterns = [
-    path('', include(router.urls)),
-    
     # ========== TEMPLATE MANAGEMENT ENDPOINTS ==========
     path('templates/types/', TemplateTypesView.as_view(), name='template-types'),
     path('templates/types/<str:template_type>/', TemplateTypeDetailView.as_view(), name='template-type-detail'),
@@ -67,11 +66,24 @@ urlpatterns = [
     path('esign/signing-url/<str:contract_id>/', views.get_signing_url, name='get_signing_url'),
     path('esign/status/<str:contract_id>/', views.check_status, name='check_status'),
     path('esign/executed/<str:contract_id>/', views.get_executed_document, name='get_executed_document'),
+
+    # ========== FIRMA E-SIGNATURE ENDPOINTS ==========
+    path('firma/sign/', firma_views.firma_sign, name='firma_sign'),
+    path('firma/contracts/upload/', firma_views.firma_upload_contract, name='firma_upload_contract'),
+    path('firma/esign/send/', firma_views.firma_send_for_signature, name='firma_send_for_signature'),
+    path('firma/esign/signing-url/<str:contract_id>/', firma_views.firma_get_signing_url, name='firma_get_signing_url'),
+    path('firma/esign/status/<str:contract_id>/', firma_views.firma_check_status, name='firma_check_status'),
+    path('firma/esign/executed/<str:contract_id>/', firma_views.firma_get_executed_document, name='firma_get_executed_document'),
+    path('firma/debug/config/', firma_views.firma_debug_config, name='firma_debug_config'),
+    path('firma/debug/connectivity/', firma_views.firma_debug_connectivity, name='firma_debug_connectivity'),
     
     # ========== HEALTH CHECK ENDPOINT ==========
     path('health/', views.HealthCheckView.as_view(), name='health-check'),
 
     # Keep any existing template_type-based route last to avoid swallowing the above
     path('templates/files/<str:template_type>/', TemplateFileView.as_view(), name='template-file'),
+
+    # Router endpoints last. This avoids shadowing explicit paths like `contracts/upload/`.
+    path('', include(router.urls)),
 ]
 

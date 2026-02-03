@@ -9,6 +9,12 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # Load environment variables from this project reliably (do not depend on CWD).
 load_dotenv(dotenv_path=BASE_DIR / '.env', override=False)
 
+# Backward-compatible fallback: some setups store secrets in contracts/.env.
+# We load it only to fill missing variables (override=False).
+_contracts_env = BASE_DIR / 'contracts' / '.env'
+if _contracts_env.exists():
+    load_dotenv(dotenv_path=_contracts_env, override=False)
+
 SECRET_KEY = os.getenv('DJANGO_SECRET_KEY', 'django-insecure-dev-key-12345')
 
 DEBUG = os.getenv('DEBUG', 'False').strip().lower() in ('1', 'true', 'yes', 'y', 'on')
@@ -79,7 +85,7 @@ WSGI_APPLICATION = 'clm_backend.wsgi.application'
 
 # Database configuration (Supabase/PostgreSQL only)
 DATABASE_URL = os.getenv('DATABASE_URL', '').strip()
-DB_ENGINE = os.getenv('DB_ENGINE', 'django.db.backends.postgresql')
+DB_ENGINE = 'django.db.backends.postgresql'
 DB_HOST = os.getenv('DB_HOST', '')
 DB_PORT = os.getenv('DB_PORT', '5432')
 
@@ -156,7 +162,7 @@ DEFAULT_CONN_MAX_AGE = 0 if USING_SUPABASE_POOLER else 60
 
 DATABASES = {
     'default': {
-        'ENGINE': DB_ENGINE,
+        'ENGINE': 'django.db.backends.postgresql',
         'NAME': os.getenv('DB_NAME', 'postgres'),
         'USER': os.getenv('DB_USER', ''),
         'PASSWORD': os.getenv('DB_PASSWORD', ''),
@@ -243,6 +249,8 @@ R2_ACCESS_KEY_ID = os.getenv('R2_ACCESS_KEY_ID', '')
 R2_SECRET_ACCESS_KEY = os.getenv('R2_SECRET_ACCESS_KEY', '')
 R2_BUCKET_NAME = os.getenv('R2_BUCKET_NAME', '')
 R2_ENDPOINT_URL = os.getenv('R2_ENDPOINT_URL', '')
+R2_CONNECT_TIMEOUT = int(os.getenv('R2_CONNECT_TIMEOUT', '5'))
+R2_READ_TIMEOUT = int(os.getenv('R2_READ_TIMEOUT', '30'))
 
 if not R2_ENDPOINT_URL and R2_ACCOUNT_ID:
     R2_ENDPOINT_URL = f"https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com"

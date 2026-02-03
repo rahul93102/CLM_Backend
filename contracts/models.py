@@ -557,10 +557,10 @@ class SigningAuditLog(models.Model):
         blank=True,
         help_text='Full SignNow API response'
     )
-    
+
     # Timestamp (immutable)
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
-    
+
     class Meta:
         db_table = 'signing_audit_logs'
         ordering = ['-created_at']
@@ -568,13 +568,163 @@ class SigningAuditLog(models.Model):
             models.Index(fields=['esignature_contract', 'created_at']),
             models.Index(fields=['event', 'created_at']),
         ]
-        # Make all fields read-only after creation
         permissions = [
             ('view_signing_audit_log', 'Can view signing audit logs'),
         ]
-    
+
     def __str__(self):
         return f"{self.event} - {self.esignature_contract.contract.title} at {self.created_at}"
+
+
+# ==========================================================================
+# Firma E-Sign Models (separate provider)
+# ==========================================================================
+
+
+class FirmaSignatureContract(models.Model):
+    """Maps a CLM Contract to a Firma document/envelope for e-sign workflow."""
+
+    STATUS_CHOICES = [
+        ('draft', 'Draft'),
+        ('sent', 'Sent for Signature'),
+        ('in_progress', 'In Progress'),
+        ('completed', 'Completed'),
+        ('declined', 'Declined'),
+        ('failed', 'Failed'),
+    ]
+
+    SIGNING_ORDER_CHOICES = [
+        ('sequential', 'Sequential'),
+        ('parallel', 'Parallel'),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    contract = models.OneToOneField(
+        Contract,
+        on_delete=models.CASCADE,
+        related_name='firma_signature_contract',
+        help_text='Associated CLM contract',
+    )
+
+    firma_document_id = models.CharField(max_length=255, unique=True, db_index=True, help_text='Firma document/envelope ID')
+
+    status = models.CharField(max_length=50, choices=STATUS_CHOICES, default='draft', db_index=True)
+    signing_order = models.CharField(max_length=20, choices=SIGNING_ORDER_CHOICES, default='sequential')
+
+    sent_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    expires_at = models.DateTimeField(null=True, blank=True)
+    last_status_check_at = models.DateTimeField(null=True, blank=True)
+
+    original_r2_key = models.CharField(max_length=500, help_text='Original contract PDF in R2')
+    executed_r2_key = models.CharField(max_length=500, null=True, blank=True, help_text='Signed contract PDF in R2')
+
+    signing_request_data = models.JSONField(default=dict, null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'firma_signature_contracts'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['firma_document_id'], name='firma_sc_docid_idx'),
+            models.Index(fields=['status'], name='firma_sc_status_idx'),
+            models.Index(fields=['contract', 'status'], name='firma_sc_contract_status_idx'),
+        ]
+
+    def __str__(self):
+        return f"FirmaSignature: {self.contract.title} ({self.status})"
+
+
+class FirmaSigner(models.Model):
+    STATUS_CHOICES = [
+        ('invited', 'Invited'),
+        ('viewed', 'Viewed'),
+        ('in_progress', 'In Progress'),
+        ('signed', 'Signed'),
+        ('declined', 'Declined'),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    firma_signature_contract = models.ForeignKey(
+        FirmaSignatureContract,
+        on_delete=models.CASCADE,
+        related_name='signers',
+    )
+
+    email = models.EmailField()
+    name = models.CharField(max_length=255)
+    signing_order = models.IntegerField(help_text='Order in signing sequence (1-based)')
+
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='invited', db_index=True)
+    has_signed = models.BooleanField(default=False)
+    signed_at = models.DateTimeField(null=True, blank=True)
+
+    signing_url = models.TextField(null=True, blank=True)
+    signing_url_expires_at = models.DateTimeField(null=True, blank=True)
+
+    declined_reason = models.TextField(null=True, blank=True)
+
+    invited_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'firma_signers'
+        ordering = ['signing_order', 'email']
+        unique_together = [('firma_signature_contract', 'email')]
+        indexes = [
+            models.Index(fields=['firma_signature_contract', 'status'], name='firma_signer_sc_status_idx'),
+            models.Index(fields=['email'], name='firma_signer_email_idx'),
+        ]
+
+    def __str__(self):
+        return f"{self.email} ({self.status}) - {self.firma_signature_contract.contract.title}"
+
+
+class FirmaSigningAuditLog(models.Model):
+    EVENT_CHOICES = [
+        ('upload', 'Document Uploaded'),
+        ('invite_sent', 'Invitation Sent'),
+        ('status_checked', 'Status Checked'),
+        ('document_downloaded', 'Document Downloaded'),
+        ('error', 'Error'),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    firma_signature_contract = models.ForeignKey(
+        FirmaSignatureContract,
+        on_delete=models.CASCADE,
+        related_name='audit_logs',
+    )
+    signer = models.ForeignKey(
+        FirmaSigner,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='audit_logs',
+    )
+
+    event = models.CharField(max_length=50, choices=EVENT_CHOICES, db_index=True)
+    message = models.TextField()
+    old_status = models.CharField(max_length=20, null=True, blank=True)
+    new_status = models.CharField(max_length=20, null=True, blank=True)
+
+    firma_response = models.JSONField(default=dict, null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        db_table = 'firma_signing_audit_logs'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['firma_signature_contract', 'created_at'], name='firma_audit_sc_created_idx'),
+            models.Index(fields=['event', 'created_at'], name='firma_audit_event_created_idx'),
+        ]
+
+    def __str__(self):
+        title = getattr(self.firma_signature_contract.contract, 'title', '')
+        return f"{self.event} - {title} at {self.created_at}"
 
 
 # ========== MANUAL EDITING MODELS ==========
