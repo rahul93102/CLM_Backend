@@ -166,7 +166,9 @@ def _ensure_uploaded(*, contract: Contract, document_name: str, signers=None, si
     pdf_sha256 = hashlib.sha256(pdf_bytes).hexdigest()
 
     # Convert signers to Firma format for upload
+    # Use temporary IDs so we can reference them in fields before creation
     recipients = []
+    fields = []
     if signers:
         cleaned = _clean_signers(signers)
         for idx, signer in enumerate(cleaned):
@@ -174,7 +176,11 @@ def _ensure_uploaded(*, contract: Contract, document_name: str, signers=None, si
             first_name = name_parts[0] if name_parts else 'Signer'
             last_name = name_parts[1] if len(name_parts) > 1 else 'Signer'
             
+            # Use temporary ID pattern per Firma docs
+            temp_id = f"temp_signer_{idx + 1}"
+            
             recipient = {
+                'id': temp_id,
                 'first_name': first_name,
                 'last_name': last_name,
                 'email': signer.get('email', ''),
@@ -182,10 +188,34 @@ def _ensure_uploaded(*, contract: Contract, document_name: str, signers=None, si
                 'order': idx + 1 if signing_order == 'sequential' else 0,
             }
             recipients.append(recipient)
+            
+            # Add signature field for this signer
+            # CRITICAL: Firma requires percentage-based positioning (0-100), not pixels
+            # Position signature fields vertically spaced on page 1
+            # For US Letter: roughly 10% from left, stacked vertically from bottom up
+            y_position = 80 - (idx * 12)  # Start at 80% from top, 12% spacing between signatures
+            
+            fields.append({
+                'type': 'signature',
+                'required': True,
+                'recipient_id': temp_id,
+                'page_number': 1,
+                'position': {
+                    'x': 10,      # 10% from left edge
+                    'y': max(10, y_position),  # Ensure we don't go off page
+                    'width': 30,  # 30% of page width
+                    'height': 8,  # 8% of page height
+                }
+            })
 
     service = _get_firma_service()
-    logger.info(f"Uploading contract to Firma with {len(recipients)} recipients")
-    upload_res = service.upload_document(pdf_bytes, str(document_name), recipients=recipients if recipients else None)
+    logger.info(f"Uploading contract to Firma with {len(recipients)} recipients and {len(fields)} signature fields")
+    upload_res = service.upload_document(
+        pdf_bytes,
+        str(document_name),
+        recipients=recipients if recipients else None,
+        fields=fields if fields else None,
+    )
     firma_document_id = str(upload_res.get('id') or '').strip()
     if not firma_document_id:
         raise FirmaApiError('Firma did not return a document id')
@@ -199,6 +229,7 @@ def _ensure_uploaded(*, contract: Contract, document_name: str, signers=None, si
         signing_request_data={
             'document_name': str(document_name),
             'recipients_count': len(recipients),
+            'fields_count': len(fields),
             'pdf_sha256': pdf_sha256,
             'pdf_bytes_len': len(pdf_bytes),
         },
@@ -319,20 +350,27 @@ def firma_upload_contract(request):
 
             if not should_reset and cleaned:
                 recipients_count = None
+                fields_count = None
                 previous_pdf_sha = None
                 try:
                     if isinstance(existing.signing_request_data, dict):
                         recipients_count = existing.signing_request_data.get('recipients_count')
+                        fields_count = existing.signing_request_data.get('fields_count')
                         previous_pdf_sha = existing.signing_request_data.get('pdf_sha256')
                 except Exception:
                     recipients_count = None
+                    fields_count = None
                     previous_pdf_sha = None
 
                 # Heuristics for an auto-reset:
                 # - previous upload had 0 recipients recorded, OR
                 # - record is in a terminal/bad state, OR
+                # - legacy upload without signature fields (would result in no signing controls), OR
                 # - contract content changed since last upload (prevents blank/stale vendor PDFs)
                 if recipients_count == 0 or existing.status in ('declined', 'failed'):
+                    should_reset = True
+                elif fields_count in (None, 0):
+                    # Legacy uploads without signature fields = no signing controls in UI
                     should_reset = True
                 elif previous_pdf_sha is None and latest_pdf_sha is not None:
                     # Legacy signing requests (created before pdf_sha256 tracking) are risky:
@@ -370,15 +408,19 @@ def firma_upload_contract(request):
             else:
                 pdf_bytes, source_r2_key = _get_contract_pdf_bytes_from_r2(contract=contract, force_refresh=True)
 
-            # Convert signers to Firma recipients
+            # Convert signers to Firma recipients with signature fields
             recipients = []
+            fields = []
             for idx, signer in enumerate(cleaned):
                 name_parts = signer.get('name', '').strip().split(maxsplit=1)
                 first_name = name_parts[0] if name_parts else 'Signer'
                 last_name = name_parts[1] if len(name_parts) > 1 else 'Signer'
 
+                temp_id = f"temp_signer_{idx + 1}"
+                
                 recipients.append(
                     {
+                        'id': temp_id,
                         'first_name': first_name,
                         'last_name': last_name,
                         'email': signer.get('email', ''),
@@ -386,6 +428,21 @@ def firma_upload_contract(request):
                         'order': idx + 1 if signing_order == 'sequential' else 0,
                     }
                 )
+                
+                # Add signature field with percentage-based positioning
+                y_position = 80 - (idx * 12)
+                fields.append({
+                    'type': 'signature',
+                    'required': True,
+                    'recipient_id': temp_id,
+                    'page_number': 1,
+                    'position': {
+                        'x': 10,
+                        'y': max(10, y_position),
+                        'width': 30,
+                        'height': 8,
+                    }
+                })
 
             if not recipients:
                 return Response(
@@ -397,7 +454,12 @@ def firma_upload_contract(request):
 
             service = _get_firma_service()
             old_document_id = existing.firma_document_id
-            upload_res = service.upload_document(pdf_bytes, str(document_name), recipients=recipients)
+            upload_res = service.upload_document(
+                pdf_bytes,
+                str(document_name),
+                recipients=recipients,
+                fields=fields,
+            )
             new_document_id = str(upload_res.get('id') or '').strip()
             if not new_document_id:
                 raise FirmaApiError('Firma did not return a document id')
@@ -418,6 +480,7 @@ def firma_upload_contract(request):
             existing.signing_request_data = {
                 'document_name': str(document_name),
                 'recipients_count': len(recipients),
+                'fields_count': len(fields),
                 'reset_from_firma_document_id': old_document_id,
                 'pdf_sha256': pdf_sha256,
                 'pdf_bytes_len': len(pdf_bytes),
@@ -756,7 +819,12 @@ def firma_sign(request):
         contract = get_object_or_404(Contract, id=contract_id)
         document_name = request.data.get('document_name') or getattr(contract, 'title', 'Contract')
 
-        record = _ensure_uploaded(contract=contract, document_name=str(document_name))
+        record = _ensure_uploaded(
+            contract=contract,
+            document_name=str(document_name),
+            signers=cleaned,
+            signing_order=signing_order,
+        )
         _ensure_sent(record=record, signers=cleaned, signing_order=signing_order, expires_in_days=expires_in_days)
 
         signer_email = cleaned[0]['email']

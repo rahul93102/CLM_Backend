@@ -83,14 +83,11 @@ class FirmaAPIService:
     def _headers(self) -> Dict[str, str]:
         """Build request headers with Authorization token.
         
-        Firma accepts both formats:
-        - Authorization: your-api-key-here
-        - Authorization: Bearer your-api-key-here
-        
-        We use Bearer format per REST convention.
+        Firma docs state: Bearer prefix is optional but not required.
+        We use the raw API key directly as recommended.
         """
         return {
-            'Authorization': f"Bearer {self.config.api_key}",
+            'Authorization': self.config.api_key,
             'Content-Type': 'application/json',
         }
 
@@ -134,13 +131,20 @@ class FirmaAPIService:
             )
         return resp
 
-    def upload_document(self, pdf_bytes: bytes, document_name: str, recipients: List[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Create signing request with document and recipients.
+    def upload_document(
+        self,
+        pdf_bytes: bytes,
+        document_name: str,
+        recipients: List[Dict[str, Any]] = None,
+        fields: List[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Create signing request with document, recipients, and signature fields.
         
         Args:
             pdf_bytes: PDF file content
             document_name: Name for the document
             recipients: List of recipient dicts with first_name, last_name, email, designation
+            fields: List of field dicts with type, page_number, position (percentage-based), recipient_id
         """
         if self.config.mock_mode:
             return {
@@ -167,10 +171,20 @@ class FirmaAPIService:
             'recipients': recipients or []  # Add recipients upfront
         }
         
-        logger.info(f"Creating signing request for: {document_name} (PDF size: {len(pdf_bytes)} bytes, recipients: {len(recipients or [])})")
+        # Add signature fields if provided (percentage-based positioning required)
+        if fields:
+            payload['fields'] = fields
+        
+        logger.info(
+            f"Creating signing request for: {document_name} "
+            f"(PDF size: {len(pdf_bytes)} bytes, recipients: {len(recipients or [])}, fields: {len(fields or [])})"
+        )
         resp = self._request('POST', url, json=payload)
         result = resp.json()
-        logger.info(f"Signing request created: {result.get('id')} with {len(result.get('recipients', []))} recipients")
+        logger.info(
+            f"Signing request created: {result.get('id')} "
+            f"with {len(result.get('recipients', []))} recipients and {len(result.get('fields', []))} fields"
+        )
         return result
 
     def create_invite(self, document_id: str, signers: List[Dict[str, str]], signing_order: str = 'sequential') -> Dict[str, Any]:
