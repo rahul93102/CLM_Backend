@@ -11,6 +11,7 @@ import textwrap
 
 
 from django.core.files.base import ContentFile
+from django.core.mail import send_mail
 from django.http import FileResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -320,8 +321,10 @@ def _generate_signature_fields(contract: Contract, signers: list, signing_order:
            'last_name': last_name,
            'email': signer.get('email', ''),
            'designation': 'Signer',
-           'order': idx + 1 if signing_order == 'sequential' else 0,
        }
+       if signing_order == 'sequential':
+           # For parallel signing, omit ordering entirely (some vendors treat 0 as invalid).
+           recipient['order'] = idx + 1
        recipients.append(recipient)
       
        # Determine signature field position for this signer
@@ -551,12 +554,63 @@ def _ensure_sent(*, record: FirmaSignatureContract, signers, signing_order: str,
    record.signing_order = signing_order
    record.sent_at = timezone.now()
    record.expires_at = timezone.now() + timedelta(days=expires_in_days)
-   record.signing_request_data = {
-       'signers': cleaned,
-       'signing_order': signing_order,
-       'expires_in_days': expires_in_days,
-   }
+   # Preserve upload-time metadata (recipients_count/fields_count/pdf_sha256/etc.)
+   # so reset heuristics can make correct decisions later.
+   data = record.signing_request_data if isinstance(record.signing_request_data, dict) else {}
+   data.update(
+       {
+           'signers': cleaned,
+           'signing_order': signing_order,
+           'expires_in_days': expires_in_days,
+       }
+   )
+   record.signing_request_data = data
    record.save()
+
+
+def _send_firma_invite_emails(*, contract: Contract, signers: list[dict], signing_links: dict[str, str]) -> dict:
+   """Send invite emails to all signers via our SMTP (independent of vendor email delivery)."""
+   subject = f"Signature requested: {(contract.title or 'Contract').strip() or 'Contract'}"
+   sent = 0
+   failures: list[dict] = []
+
+   for s in signers:
+       email = str(s.get('email') or '').strip()
+       name = str(s.get('name') or '').strip() or email
+       if not email:
+           continue
+       link = str(signing_links.get(email.lower()) or '').strip()
+       if not link:
+           failures.append({'email': email, 'error': 'missing signing link'})
+           continue
+
+       text_body = (
+           f"Hello {name},\n\n"
+           f"You have been invited to sign the contract: {(contract.title or 'Contract').strip() or 'Contract'}.\n\n"
+           f"Signing link: {link}\n\n"
+           "If you were not expecting this email, you can ignore it.\n"
+       )
+       html_body = (
+           f"<p>Hello {name},</p>"
+           f"<p>You have been invited to sign the contract: <b>{(contract.title or 'Contract').strip() or 'Contract'}</b>.</p>"
+           f"<p><a href=\"{link}\" target=\"_blank\" rel=\"noopener noreferrer\">Click here to sign</a></p>"
+           f"<p style=\"color:#6b7280;font-size:12px\">If you were not expecting this email, you can ignore it.</p>"
+       )
+
+       try:
+           send_mail(
+               subject,
+               text_body,
+               settings.DEFAULT_FROM_EMAIL,
+               [email],
+               fail_silently=False,
+               html_message=html_body,
+           )
+           sent += 1
+       except Exception as e:
+           failures.append({'email': email, 'error': str(e)})
+
+   return {'sent': sent, 'failures': failures}
 
 
    FirmaSigningAuditLog.objects.create(
@@ -637,6 +691,7 @@ def firma_upload_contract(request):
                recipients_count = None
                fields_count = None
                previous_pdf_sha = None
+               existing_signer_emails = []
                try:
                    if isinstance(existing.signing_request_data, dict):
                        recipients_count = existing.signing_request_data.get('recipients_count')
@@ -647,6 +702,14 @@ def firma_upload_contract(request):
                    fields_count = None
                    previous_pdf_sha = None
 
+               try:
+                   existing_signer_emails = list(existing.signers.values_list('email', flat=True))
+               except Exception:
+                   existing_signer_emails = []
+
+               new_emails = {str(s.get('email') or '').strip().lower() for s in cleaned if s.get('email')}
+               old_emails = {str(e or '').strip().lower() for e in existing_signer_emails if e}
+
 
                # Heuristics for an auto-reset:
                # - previous upload had 0 recipients recorded, OR
@@ -654,6 +717,19 @@ def firma_upload_contract(request):
                # - legacy upload without signature fields (would result in no signing controls), OR
                # - contract content changed since last upload (prevents blank/stale vendor PDFs)
                if recipients_count == 0 or existing.status in ('declined', 'failed'):
+                   should_reset = True
+               elif recipients_count is None and not old_emails and new_emails:
+                   # Legacy/buggy state: signing_request_data lost recipients_count and we have no local signer rows,
+                   # meaning the vendor request likely has no recipients. Reset so all signers get invited.
+                   should_reset = True
+               elif recipients_count is not None and recipients_count != len(cleaned):
+                   # User changed number of signers; recipients are immutable on vendor request.
+                   should_reset = True
+               elif old_emails and new_emails and old_emails != new_emails:
+                   # User changed signer emails; must reset vendor request to match.
+                   should_reset = True
+               elif (existing.signing_order or 'sequential') != (signing_order or 'sequential'):
+                   # Signing order affects recipient ordering; reset to ensure correctness.
                    should_reset = True
                elif fields_count in (None, 0):
                    # Legacy uploads without signature fields = no signing controls in UI
@@ -674,6 +750,21 @@ def firma_upload_contract(request):
                            should_reset = False
                    except Exception:
                        pass
+
+           # If the request was already sent and at least one signer has signed, do NOT reset.
+           # Changing recipients mid-process would invalidate the audit trail.
+           if should_reset and existing.status == 'sent':
+               try:
+                   if existing.signers.filter(has_signed=True).exists():
+                       return Response(
+                           {
+                               'error': 'Cannot change signers or signing order after signing has started.',
+                               'details': 'At least one signer has already signed. Create a new signing request/contract to change recipients.',
+                           },
+                           status=status.HTTP_400_BAD_REQUEST,
+                       )
+               except Exception:
+                   pass
 
 
            if not should_reset:
@@ -854,6 +945,186 @@ def firma_send_for_signature(request):
        return Response({'error': str(e), 'details': e.response_text}, status=status.HTTP_502_BAD_GATEWAY)
    except Exception as e:
        logger.error('Firma send failed: %s', e, exc_info=True)
+       return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def firma_invite_all(request):
+   """Single, reliable invite flow: upload/reset with ALL recipients then email ALL signers.
+
+   This intentionally avoids sequential/parallel complexity: all signers are invited at the same time.
+
+   POST /api/v1/firma/esign/invite-all/
+   Body: {"contract_id": "uuid", "signers": [{"name":...,"email":...}], "expires_in_days": 30}
+
+   Returns the first signer's signing URL for convenience.
+   """
+   contract_id = request.data.get('contract_id')
+   signers = request.data.get('signers') or []
+   expires_in_days = int(request.data.get('expires_in_days') or 30)
+
+   if not contract_id:
+       return Response({'error': 'contract_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+   cleaned = _clean_signers(signers)
+   if not cleaned:
+       return Response({'error': 'At least one signer with name+email is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+   contract = get_object_or_404(Contract, id=contract_id, tenant_id=request.user.tenant_id)
+   document_name = request.data.get('document_name') or getattr(contract, 'title', 'Contract')
+
+   # If an existing request is already in progress, don't allow rewriting recipients.
+   if hasattr(contract, 'firma_signature_contract'):
+       existing = contract.firma_signature_contract
+       if existing.status == 'sent':
+           try:
+               if existing.signers.filter(has_signed=True).exists():
+                   return Response(
+                       {
+                           'error': 'Cannot re-invite after signing has started.',
+                           'details': 'At least one signer has already signed. Create a new contract/signing request to change recipients.',
+                       },
+                       status=status.HTTP_400_BAD_REQUEST,
+                   )
+           except Exception:
+               pass
+
+   try:
+       # Always regenerate/upload latest PDF and ALWAYS include all recipients/fields.
+       pdf_bytes, source_r2_key = _get_contract_pdf_bytes_from_r2(contract=contract, force_refresh=True)
+       pdf_sha256 = hashlib.sha256(pdf_bytes).hexdigest()
+
+       signing_order = 'parallel'
+       recipients, fields = _generate_signature_fields(contract, cleaned, signing_order)
+       if not recipients:
+           return Response({'error': 'signers are required'}, status=status.HTTP_400_BAD_REQUEST)
+
+       service = _get_firma_service()
+       upload_res = service.upload_document(
+           pdf_bytes,
+           str(document_name),
+           recipients=recipients,
+           fields=fields,
+       )
+       new_document_id = str(upload_res.get('id') or '').strip()
+       if not new_document_id:
+           raise FirmaApiError('Firma did not return a document id')
+
+       # Build signing links mapping (prefer upload response recipients if present).
+       signing_links: dict[str, str] = {}
+       try:
+           resp_recipients = upload_res.get('recipients') or []
+           if isinstance(resp_recipients, list):
+               for r in resp_recipients:
+                   email = str((r or {}).get('email') or '').strip().lower()
+                   rid = str((r or {}).get('id') or '').strip()
+                   if email and rid:
+                       signing_links[email] = f"https://app.firma.dev/signing/{rid}"
+       except Exception:
+           signing_links = {}
+
+       if not signing_links:
+           for s in cleaned:
+               email = str(s.get('email') or '').strip()
+               if not email:
+                   continue
+               link_res = service.get_signing_link(new_document_id, email)
+               link = str(link_res.get('signing_link') or '').strip()
+               if link:
+                   signing_links[email.lower()] = link
+
+       # Persist/update local record
+       if hasattr(contract, 'firma_signature_contract'):
+           record = contract.firma_signature_contract
+           old_document_id = record.firma_document_id
+           record.signers.all().delete()
+           record.firma_document_id = new_document_id
+           record.status = 'draft'
+           record.signing_order = signing_order
+           record.sent_at = None
+           record.completed_at = None
+           record.expires_at = None
+           record.last_status_check_at = None
+           record.executed_r2_key = None
+           record.original_r2_key = source_r2_key
+           record.signing_request_data = {
+               'document_name': str(document_name),
+               'recipients_count': len(recipients),
+               'fields_count': len(fields),
+               'reset_from_firma_document_id': old_document_id,
+               'pdf_sha256': pdf_sha256,
+               'pdf_bytes_len': len(pdf_bytes),
+           }
+           record.save()
+
+           FirmaSigningAuditLog.objects.create(
+               firma_signature_contract=record,
+               event='upload',
+               message=f'Document uploaded to Firma for invite-all. Old: {old_document_id} -> New: {new_document_id}',
+               old_status='draft',
+               new_status='draft',
+               firma_response=upload_res,
+           )
+       else:
+           record = FirmaSignatureContract.objects.create(
+               contract=contract,
+               firma_document_id=new_document_id,
+               status='draft',
+               signing_order=signing_order,
+               original_r2_key=source_r2_key,
+               signing_request_data={
+                   'document_name': str(document_name),
+                   'recipients_count': len(recipients),
+                   'fields_count': len(fields),
+                   'pdf_sha256': pdf_sha256,
+                   'pdf_bytes_len': len(pdf_bytes),
+               },
+           )
+           FirmaSigningAuditLog.objects.create(
+               firma_signature_contract=record,
+               event='upload',
+               message=f'Document uploaded to Firma for invite-all: {new_document_id}',
+               new_status='draft',
+               firma_response=upload_res,
+           )
+
+       # Trigger vendor invite (best-effort) and update our signer rows.
+       _ensure_sent(record=record, signers=cleaned, signing_order=signing_order, expires_in_days=expires_in_days)
+
+       # Send our own emails to all signers with their links (the thing you care about).
+       email_result = _send_firma_invite_emails(contract=contract, signers=cleaned, signing_links=signing_links)
+
+       first_email = str(cleaned[0].get('email') or '').strip().lower()
+       first_link = signing_links.get(first_email)
+       if not first_link:
+           # Fall back to DB signer (if stored) or vendor lookup.
+           try:
+               signer = record.signers.filter(email__iexact=cleaned[0]['email']).first()
+               if signer and signer.signing_url:
+                   first_link = signer.signing_url
+           except Exception:
+               pass
+
+       return Response(
+           {
+               'success': True,
+               'contract_id': str(contract_id),
+               'firma_document_id': record.firma_document_id,
+               'status': record.status,
+               'signers_invited': len(cleaned),
+               'emails_sent': email_result.get('sent', 0),
+               'email_failures': email_result.get('failures', []),
+               'signing_url': first_link,
+               'signer_email': cleaned[0]['email'],
+           },
+           status=status.HTTP_200_OK,
+       )
+
+   except FirmaApiError as e:
+       return Response({'error': str(e), 'details': e.response_text}, status=status.HTTP_502_BAD_GATEWAY)
+   except Exception as e:
+       logger.error('Firma invite-all failed: %s', e, exc_info=True)
        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
