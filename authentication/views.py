@@ -14,6 +14,8 @@ from django.core.mail import send_mail
 from django.utils import timezone
 from .models import User
 from .otp_service import OTPService
+from tenants.models import TenantModel
+import uuid
 
 
 class TokenView(APIView):
@@ -35,13 +37,31 @@ class TokenView(APIView):
             return Response({'error': 'Invalid credentials'}, status=status.HTTP_401_UNAUTHORIZED)
         
         refresh = RefreshToken.for_user(user)
+        # Embed commonly needed claims so downstream requests don't require a DB lookup.
+        is_admin = bool(user.is_staff or user.is_superuser)
+        is_superadmin = bool(user.is_superuser)
+        refresh['email'] = user.email
+        refresh['tenant_id'] = str(user.tenant_id)
+        refresh['is_admin'] = is_admin
+        refresh['is_superadmin'] = is_superadmin
+        access = refresh.access_token
+        access['email'] = user.email
+        access['tenant_id'] = str(user.tenant_id)
+        access['is_admin'] = is_admin
+        access['is_superadmin'] = is_superadmin
         user.last_login = timezone.now()
         user.save(update_fields=['last_login'])
         
         return Response({
-            'access': str(refresh.access_token),
+            'access': str(access),
             'refresh': str(refresh),
-            'user': {'user_id': str(user.user_id), 'email': user.email, 'tenant_id': str(user.tenant_id)}
+            'user': {
+                'user_id': str(user.user_id),
+                'email': user.email,
+                'tenant_id': str(user.tenant_id),
+                'is_admin': is_admin,
+                'is_superadmin': is_superadmin,
+            }
         }, status=status.HTTP_200_OK)
 
 
@@ -53,6 +73,8 @@ class RegisterView(APIView):
         email = request.data.get('email', '').strip().lower()
         password = request.data.get('password', '')
         full_name = request.data.get('full_name', '').strip()
+        tenant_id_raw = (request.data.get('tenant_id') or '').strip()
+        tenant_domain = (request.data.get('tenant_domain') or '').strip().lower()
         
         if not email or not password:
             return Response({'error': 'Email and password required'}, status=status.HTTP_400_BAD_REQUEST)
@@ -60,9 +82,55 @@ class RegisterView(APIView):
             return Response({'error': 'Password minimum 6 chars'}, status=status.HTTP_400_BAD_REQUEST)
         if User.objects.filter(email=email).exists():
             return Response({'error': 'User exists'}, status=status.HTTP_400_BAD_REQUEST)
-        
-        import uuid
-        user = User(email=email, first_name=full_name.split()[0] if full_name else '', tenant_id=uuid.uuid4(), is_active=True)
+
+        tenant_id = None
+        if tenant_id_raw:
+            try:
+                tenant_id = uuid.UUID(tenant_id_raw)
+            except ValueError:
+                return Response({'error': 'Invalid tenant_id'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if tenant_id is None and tenant_domain:
+            tenant = TenantModel.objects.filter(domain=tenant_domain).first()
+            if tenant:
+                tenant_id = tenant.id
+
+        if tenant_id is None:
+            email_domain = (email.split('@', 1)[1] if '@' in email else '').strip().lower()
+            if email_domain:
+                tenant = TenantModel.objects.filter(domain=email_domain).first()
+                if tenant:
+                    tenant_id = tenant.id
+
+        if tenant_id is None:
+            # Default to first active tenant if one exists (single-tenant friendly).
+            tenant = TenantModel.objects.filter(status='active').order_by('created_at').first()
+            if tenant:
+                tenant_id = tenant.id
+
+        if tenant_id is None:
+            # Last resort: create a new tenant inferred from email domain.
+            email_domain = (email.split('@', 1)[1] if '@' in email else 'tenant.local').strip().lower() or 'tenant.local'
+            base_domain = email_domain
+            domain = base_domain
+            suffix = 1
+            while TenantModel.objects.filter(domain=domain).exists():
+                suffix += 1
+                domain = f"{base_domain}-{suffix}"
+            tenant = TenantModel.objects.create(
+                name=f"Tenant {domain}",
+                domain=domain,
+                status='active',
+                subscription_plan='free',
+            )
+            tenant_id = tenant.id
+
+        user = User(
+            email=email,
+            first_name=full_name.split()[0] if full_name else '',
+            tenant_id=tenant_id,
+            is_active=True,
+        )
         user.set_password(password)
         user.save()
         
@@ -74,7 +142,29 @@ class RegisterView(APIView):
         otp_message = otp_result.get('message', 'OTP sent to email')
         
         refresh = RefreshToken.for_user(user)
-        return Response({'access': str(refresh.access_token), 'refresh': str(refresh), 'user': {'user_id': str(user.user_id), 'email': user.email, 'message': f'User registered successfully. {otp_message}'}}, status=status.HTTP_201_CREATED)
+        is_admin = bool(user.is_staff or user.is_superuser)
+        is_superadmin = bool(user.is_superuser)
+        refresh['email'] = user.email
+        refresh['tenant_id'] = str(user.tenant_id)
+        refresh['is_admin'] = is_admin
+        refresh['is_superadmin'] = is_superadmin
+        access = refresh.access_token
+        access['email'] = user.email
+        access['tenant_id'] = str(user.tenant_id)
+        access['is_admin'] = is_admin
+        access['is_superadmin'] = is_superadmin
+        return Response({
+            'access': str(access),
+            'refresh': str(refresh),
+            'user': {
+                'user_id': str(user.user_id),
+                'email': user.email,
+                'tenant_id': str(user.tenant_id),
+                'is_admin': is_admin,
+                'is_superadmin': is_superadmin,
+                'message': f'User registered successfully. {otp_message}',
+            }
+        }, status=status.HTTP_201_CREATED)
 
 
 class CurrentUserView(APIView):
@@ -83,7 +173,26 @@ class CurrentUserView(APIView):
     
     def get(self, request):
         user = request.user
-        return Response({'user_id': str(user.user_id), 'email': user.email, 'tenant_id': str(user.tenant_id)}, status=status.HTTP_200_OK)
+        # Works for both DB-backed User and stateless JWTClaimsUser.
+        user_id = getattr(user, 'user_id', None) or getattr(user, 'pk', None) or ''
+        email = getattr(user, 'email', None)
+        tenant_id = getattr(user, 'tenant_id', None)
+        is_admin = bool(
+            getattr(user, 'is_admin', False)
+            or getattr(user, 'is_staff', False)
+            or getattr(user, 'is_superuser', False)
+        )
+        is_superadmin = bool(
+            getattr(user, 'is_superadmin', False)
+            or getattr(user, 'is_superuser', False)
+        )
+        return Response({
+            'user_id': str(user_id),
+            'email': email,
+            'tenant_id': str(tenant_id) if tenant_id is not None else None,
+            'is_admin': is_admin,
+            'is_superadmin': is_superadmin,
+        }, status=status.HTTP_200_OK)
 
 
 class LogoutView(APIView):
@@ -152,10 +261,31 @@ class VerifyEmailOTPView(APIView):
             
             OTPService.clear_otp(user, 'login')
             refresh = RefreshToken.for_user(user)
+            is_admin = bool(user.is_staff or user.is_superuser)
+            is_superadmin = bool(user.is_superuser)
+            refresh['email'] = user.email
+            refresh['tenant_id'] = str(user.tenant_id)
+            refresh['is_admin'] = is_admin
+            refresh['is_superadmin'] = is_superadmin
+            access = refresh.access_token
+            access['email'] = user.email
+            access['tenant_id'] = str(user.tenant_id)
+            access['is_admin'] = is_admin
+            access['is_superadmin'] = is_superadmin
             user.last_login = timezone.now()
             user.save(update_fields=['last_login'])
             
-            return Response({'access': str(refresh.access_token), 'refresh': str(refresh), 'user': {'user_id': str(user.user_id), 'email': user.email}}, status=status.HTTP_200_OK)
+            return Response({
+                'access': str(access),
+                'refresh': str(refresh),
+                'user': {
+                    'user_id': str(user.user_id),
+                    'email': user.email,
+                    'tenant_id': str(user.tenant_id),
+                    'is_admin': is_admin,
+                    'is_superadmin': is_superadmin,
+                }
+            }, status=status.HTTP_200_OK)
         except User.DoesNotExist:
             return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
 

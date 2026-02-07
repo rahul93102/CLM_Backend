@@ -11,6 +11,7 @@ router = DefaultRouter()
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/auth/', include('authentication.urls')),
+    path('api/v1/admin/', include('authentication.admin_urls')),
     path('api/', include('notifications.urls')),
     path('api/v1/', include('repository.private_upload_urls')),
     path('api/v1/', include('contracts.urls')),
