@@ -629,14 +629,113 @@ def _send_firma_invite_emails(*, contract: Contract, signers: list[dict], signin
    return {'sent': sent, 'failures': failures}
 
 
-   FirmaSigningAuditLog.objects.create(
-       firma_signature_contract=record,
-       event='invite_sent',
-       message=f'Invitations sent to {len(cleaned)} signer(s)',
-       old_status='draft',
-       new_status='sent',
-       firma_response=invite_res,
-   )
+def _parse_firma_datetime(value):
+   """Best-effort parse of vendor datetimes.
+
+   Accepts ISO strings or epoch seconds/millis. Returns timezone-aware datetime or None.
+   """
+   if value is None:
+       return None
+   try:
+       if isinstance(value, (int, float)):
+           ts = float(value)
+           # Heuristic: treat big numbers as milliseconds.
+           if ts > 10_000_000_000:
+               ts = ts / 1000.0
+           return timezone.datetime.fromtimestamp(ts, tz=timezone.get_current_timezone())
+       if isinstance(value, str):
+           s = value.strip()
+           if not s:
+               return None
+           # Try epoch-in-string.
+           if s.isdigit():
+               return _parse_firma_datetime(int(s))
+           dt = timezone.datetime.fromisoformat(s.replace('Z', '+00:00'))
+           if timezone.is_naive(dt):
+               dt = timezone.make_aware(dt, timezone.get_current_timezone())
+           return dt
+   except Exception:
+       return None
+   return None
+
+
+def _firma_recipient_email(recipient: dict) -> str:
+   try:
+       return str((recipient or {}).get('email') or '').strip().lower()
+   except Exception:
+       return ''
+
+
+def _sync_signers_from_recipients(*, record: FirmaSignatureContract, recipients: list) -> tuple[int, int]:
+   """Sync local `FirmaSigner` rows from vendor recipients.
+
+   Returns (signed_count, total_count) based on local rows after sync.
+   """
+   if not isinstance(recipients, list) or not recipients:
+       # Use local DB only.
+       total = record.signers.count()
+       signed = record.signers.filter(has_signed=True).count()
+       return signed, total
+
+   recipients_by_email: dict[str, dict] = {}
+   for r in recipients:
+       if not isinstance(r, dict):
+           continue
+       email = _firma_recipient_email(r)
+       if email:
+           recipients_by_email[email] = r
+
+   now = timezone.now()
+   for signer in record.signers.all():
+       email_key = str(signer.email or '').strip().lower()
+       vendor = recipients_by_email.get(email_key)
+       if not vendor:
+           continue
+
+       vendor_status = str(vendor.get('status') or '').strip().lower()
+       vendor_signed_at = (
+           vendor.get('signed_at')
+           or vendor.get('completed_at')
+           or vendor.get('signed_on')
+           or vendor.get('completed_on')
+       )
+       signed_at = _parse_firma_datetime(vendor_signed_at)
+
+       update_fields = []
+
+       if vendor_status in ('completed', 'complete', 'signed', 'finished'):
+           if not signer.has_signed:
+               signer.has_signed = True
+               update_fields.append('has_signed')
+           if signer.status != 'signed':
+               signer.status = 'signed'
+               update_fields.append('status')
+           if signed_at and (not signer.signed_at or signer.signed_at != signed_at):
+               signer.signed_at = signed_at
+               update_fields.append('signed_at')
+           elif not signer.signed_at:
+               signer.signed_at = now
+               update_fields.append('signed_at')
+       elif vendor_status in ('declined', 'rejected', 'refused'):
+           if signer.status != 'declined':
+               signer.status = 'declined'
+               update_fields.append('status')
+           if signer.has_signed:
+               signer.has_signed = False
+               update_fields.append('has_signed')
+       elif vendor_status:
+           # Keep local status for unknown vendor values, but at least record invited state.
+           if signer.status in (None, '', 'invited'):
+               # leave it
+               pass
+
+       if update_fields:
+           update_fields.append('updated_at')
+           signer.save(update_fields=update_fields)
+
+   total = record.signers.count()
+   signed = record.signers.filter(has_signed=True).count()
+   return signed, total
 
 
 
@@ -1206,6 +1305,76 @@ def firma_get_signing_url(request, contract_id: str):
        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def firma_list_signing_requests(request):
+   """List Firma signing requests for the authenticated tenant.
+
+   Supports:
+   - ?limit=50 (1..200)
+   - ?status=sent|in_progress|completed|declined|failed|draft
+   """
+   limit = int(request.query_params.get('limit') or 50)
+   limit = max(1, min(limit, 200))
+   status_filter = str(request.query_params.get('status') or '').strip().lower()
+
+   qs = FirmaSignatureContract.objects.select_related('contract').prefetch_related('signers')
+   # Tenant scoping.
+   qs = qs.filter(contract__tenant_id=getattr(request.user, 'tenant_id', None))
+   if status_filter:
+       qs = qs.filter(status=status_filter)
+
+   qs = qs.order_by('-updated_at')[:limit]
+
+   results = []
+   for rec in qs:
+       try:
+           total = rec.signers.count()
+           signed = rec.signers.filter(has_signed=True).count()
+       except Exception:
+           total = 0
+           signed = 0
+
+       # Use whichever looks freshest for UI.
+       last_updated_at = rec.updated_at
+       try:
+           if rec.last_status_check_at and rec.last_status_check_at > last_updated_at:
+               last_updated_at = rec.last_status_check_at
+       except Exception:
+           pass
+
+       results.append(
+           {
+               'id': str(rec.id),
+               'provider': 'firma',
+               'contract_id': str(rec.contract_id),
+               'contract_title': getattr(rec.contract, 'title', None) or getattr(rec.contract, 'name', None) or 'Contract',
+               'firma_document_id': rec.firma_document_id,
+               'status': rec.status,
+               'signing_order': rec.signing_order,
+               'sent_at': rec.sent_at.isoformat() if rec.sent_at else None,
+               'completed_at': rec.completed_at.isoformat() if rec.completed_at else None,
+               'expires_at': rec.expires_at.isoformat() if rec.expires_at else None,
+               'last_checked': rec.last_status_check_at.isoformat() if rec.last_status_check_at else None,
+               'last_updated': last_updated_at.isoformat() if last_updated_at else None,
+               'progress': {
+                   'total_signers': int(total),
+                   'signed': int(signed),
+                   'remaining': int(max(0, total - signed)),
+               },
+           }
+       )
+
+   return Response(
+       {
+           'success': True,
+           'count': len(results),
+           'results': results,
+       },
+       status=status.HTTP_200_OK,
+   )
+
+
 
 
 @api_view(['GET'])
@@ -1224,6 +1393,8 @@ def firma_check_status(request, contract_id: str):
        raw_status = status_info.get('raw_status')
        is_completed = bool(status_info.get('is_completed') or new_status == 'completed')
 
+       recipients = status_info.get('recipients') if isinstance(status_info, dict) else None
+
 
        # Persist the raw vendor status in JSON (safe for long strings)
        try:
@@ -1238,21 +1409,29 @@ def firma_check_status(request, contract_id: str):
 
        if is_completed:
            record.status = 'completed'
+           # Prefer vendor-completed timestamp when available.
+           vendor_completed_at = _parse_firma_datetime(status_info.get('completed_at') if isinstance(status_info, dict) else None)
            if not record.completed_at:
-               record.completed_at = timezone.now()
+               record.completed_at = vendor_completed_at or timezone.now()
 
-
-           # Best-effort signer state sync. In mock mode, the API doesn't return signer details,
-           # so we mark all invited signers as signed when the document completes.
-           now = timezone.now()
-           for signer in record.signers.all():
-               if not signer.has_signed:
-                   signer.has_signed = True
-                   signer.status = 'signed'
-                   signer.signed_at = signer.signed_at or now
-                   signer.save(update_fields=['has_signed', 'status', 'signed_at', 'updated_at'])
+           # Best-effort signer state sync.
+           # In mock mode or when recipients aren't available, mark all invited signers as signed.
+           if isinstance(recipients, list) and recipients:
+               _sync_signers_from_recipients(record=record, recipients=recipients)
+           else:
+               now = timezone.now()
+               for signer in record.signers.all():
+                   if not signer.has_signed:
+                       signer.has_signed = True
+                       signer.status = 'signed'
+                       signer.signed_at = signer.signed_at or now
+                       signer.save(update_fields=['has_signed', 'status', 'signed_at', 'updated_at'])
        else:
            record.status = new_status
+
+           # While in-progress, sync signer statuses if recipients are present.
+           if isinstance(recipients, list) and recipients:
+               _sync_signers_from_recipients(record=record, recipients=recipients)
 
 
        record.last_status_check_at = timezone.now()
@@ -1271,7 +1450,12 @@ def firma_check_status(request, contract_id: str):
 
 
        signers_resp = []
+       signed_count = 0
+       total_count = 0
        for s in record.signers.all():
+           total_count += 1
+           if s.has_signed:
+               signed_count += 1
            signers_resp.append(
                {
                    'email': s.email,
@@ -1283,7 +1467,7 @@ def firma_check_status(request, contract_id: str):
            )
 
 
-       all_signed = all(x['has_signed'] for x in signers_resp) if signers_resp else False
+       all_signed = bool(total_count > 0 and signed_count == total_count)
 
 
        return Response(
@@ -1291,6 +1475,15 @@ def firma_check_status(request, contract_id: str):
                'success': True,
                'contract_id': str(contract_id),
                'status': record.status,
+               'created_at': getattr(record, 'created_at', None).isoformat() if getattr(record, 'created_at', None) else None,
+               'sent_at': record.sent_at.isoformat() if getattr(record, 'sent_at', None) else None,
+               'completed_at': record.completed_at.isoformat() if getattr(record, 'completed_at', None) else None,
+               'expires_at': record.expires_at.isoformat() if getattr(record, 'expires_at', None) else None,
+               'progress': {
+                   'total_signers': total_count,
+                   'signed': signed_count,
+                   'remaining': max(0, total_count - signed_count),
+               },
                'signers': signers_resp,
                'all_signed': all_signed,
                'last_checked': record.last_status_check_at.isoformat() if record.last_status_check_at else None,
@@ -1351,23 +1544,61 @@ def firma_get_executed_document(request, contract_id: str):
 
    r2 = R2StorageService()
 
+   # Prefer cached executed copy.
+   if record.executed_r2_key:
+       try:
+           cached = r2.get_file_bytes(record.executed_r2_key)
+           if cached:
+               pdf_file = BytesIO(cached)
+               pdf_file.seek(0)
+               filename = f"signed_contract_{contract_id}.pdf"
+               return FileResponse(pdf_file, as_attachment=True, filename=filename, content_type='application/pdf')
+       except Exception:
+           pass
 
-   # Try vendor download; if unavailable (mock mode), fall back to original.
+   service = _get_firma_service()
+   mock_mode = bool(getattr(service, 'config', None) and getattr(service.config, 'mock_mode', False))
+
+   # Try vendor executed download.
    try:
-       service = _get_firma_service()
-       pdf_bytes = service.download_document(record.firma_document_id)
-   except Exception:
+       pdf_bytes = service.download_executed_document(record.firma_document_id)
+   except Exception as e:
+       logger.warning('Firma executed download failed: %s', e)
        pdf_bytes = b''
 
-
+   # In mock mode only, fall back to original.
    if not pdf_bytes:
+       if not mock_mode:
+           return Response(
+               {
+                   'error': 'Failed to retrieve executed document from Firma',
+                   'details': 'Vendor returned empty response. This endpoint does not fall back to unsigned PDFs in real mode.',
+               },
+               status=status.HTTP_502_BAD_GATEWAY,
+           )
        try:
            pdf_bytes = r2.get_file_bytes(record.original_r2_key)
        except Exception as e:
            logger.error('Failed to read stored PDF from R2: %s', e, exc_info=True)
            return Response({'error': 'Failed to retrieve executed document'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+   # Guardrail: if executed bytes match original bytes in real mode, refuse.
+   if pdf_bytes and not mock_mode:
+       try:
+           original_bytes = r2.get_file_bytes(record.original_r2_key) if record.original_r2_key else b''
+           if original_bytes and original_bytes == pdf_bytes:
+               return Response(
+                   {
+                       'error': 'Executed document appears to be unsigned',
+                       'details': 'Vendor returned the original PDF bytes for the executed download.',
+                   },
+                   status=status.HTTP_502_BAD_GATEWAY,
+               )
+       except Exception:
+           # If we can't compare, still continue.
+           pass
 
+   # Cache executed bytes.
    if not record.executed_r2_key and pdf_bytes:
        filename = f"firma_executed_{contract_id}.pdf"
        r2_key = r2.upload_file(ContentFile(pdf_bytes, name=filename), record.contract.tenant_id, filename)
@@ -1387,6 +1618,38 @@ def firma_get_executed_document(request, contract_id: str):
    pdf_file = BytesIO(pdf_bytes)
    pdf_file.seek(0)
    filename = f"signed_contract_{contract_id}.pdf"
+   return FileResponse(pdf_file, as_attachment=True, filename=filename, content_type='application/pdf')
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def firma_get_certificate_document(request, contract_id: str):
+   """Download completion certificate / audit trail PDF for a completed signing request."""
+   record = get_object_or_404(FirmaSignatureContract, contract_id=contract_id)
+
+   if record.status != 'completed':
+       return Response(
+           {
+               'error': 'Certificate is only available once signing is completed',
+               'current_status': record.status,
+           },
+           status=status.HTTP_400_BAD_REQUEST,
+       )
+
+   try:
+       service = _get_firma_service()
+       pdf_bytes = service.download_certificate(record.firma_document_id)
+       if not pdf_bytes:
+           raise FirmaApiError('Empty certificate response')
+   except FirmaApiError as e:
+       return Response({'error': str(e), 'details': e.response_text}, status=status.HTTP_502_BAD_GATEWAY)
+   except Exception as e:
+       logger.error('Firma certificate download failed: %s', e, exc_info=True)
+       return Response({'error': 'Failed to download certificate'}, status=status.HTTP_502_BAD_GATEWAY)
+
+   pdf_file = BytesIO(pdf_bytes)
+   pdf_file.seek(0)
+   filename = f"signed_contract_{contract_id}_certificate.pdf"
    return FileResponse(pdf_file, as_attachment=True, filename=filename, content_type='application/pdf')
 
 _FIRMA_STREAM_LOCK = Lock()
@@ -1492,8 +1755,30 @@ def firma_resend_invites(request, contract_id: str):
 
        service = _get_firma_service()
        signers = [{'email': s.email, 'name': s.name} for s in record.signers.all()]
-       # Best-effort send.
+       # Best-effort vendor send.
        send_res = service.create_invite(record.firma_document_id, signers, signing_order=record.signing_order)
+
+       # Always send our own emails with signing links.
+       signing_links: dict[str, str] = {}
+       for s in record.signers.all():
+           email = str(s.email or '').strip()
+           if not email:
+               continue
+           if s.signing_url and (not s.signing_url_expires_at or s.signing_url_expires_at > timezone.now()):
+               signing_links[email.lower()] = str(s.signing_url).strip()
+               continue
+           try:
+               link_res = service.get_signing_link(record.firma_document_id, email)
+               link = str(link_res.get('signing_link') or '').strip()
+               if link:
+                   signing_links[email.lower()] = link
+                   s.signing_url = link
+                   s.signing_url_expires_at = timezone.now() + timedelta(hours=24)
+                   s.save(update_fields=['signing_url', 'signing_url_expires_at', 'updated_at'])
+           except Exception:
+               continue
+
+       email_result = _send_firma_invite_emails(contract=record.contract, signers=signers, signing_links=signing_links)
        old = record.status
        if record.status == 'draft':
            record.status = 'sent'
@@ -1509,9 +1794,29 @@ def firma_resend_invites(request, contract_id: str):
            firma_response=send_res,
        )
 
-       _firma_stream_publish(str(record.contract_id), {'type': 'invite_resent', 'payload': send_res, 'ts': int(time.time())})
+       _firma_stream_publish(
+           str(record.contract_id),
+           {
+               'type': 'invite_resent',
+               'payload': {
+                   'vendor': send_res,
+                   'emails_sent': email_result.get('sent', 0),
+                   'email_failures': email_result.get('failures', []),
+               },
+               'ts': int(time.time()),
+           },
+       )
 
-       return Response({'success': True, 'contract_id': str(contract_id), 'status': record.status}, status=status.HTTP_200_OK)
+       return Response(
+           {
+               'success': True,
+               'contract_id': str(contract_id),
+               'status': record.status,
+               'emails_sent': email_result.get('sent', 0),
+               'email_failures': email_result.get('failures', []),
+           },
+           status=status.HTTP_200_OK,
+       )
    except FirmaApiError as e:
        return Response({'error': str(e), 'details': e.response_text}, status=status.HTTP_502_BAD_GATEWAY)
    except Exception as e:

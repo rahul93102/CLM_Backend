@@ -28,6 +28,8 @@ class FirmaConfig:
     status_path: str
     users_path: str
     download_path: str
+    executed_download_path: str
+    certificate_download_path: str
     reminders_path: str
 
     webhooks_path: str
@@ -69,6 +71,11 @@ def load_firma_config() -> FirmaConfig:
         status_path=(os.getenv('FIRMA_STATUS_PATH') or '/functions/v1/signing-request-api/signing-requests/{document_id}').strip(),
         users_path=(os.getenv('FIRMA_USERS_PATH') or '/functions/v1/signing-request-api/signing-requests/{document_id}/users').strip(),
         download_path=(os.getenv('FIRMA_DOWNLOAD_PATH') or '/functions/v1/signing-request-api/signing-requests/{document_id}/download').strip(),
+        executed_download_path=(os.getenv('FIRMA_EXECUTED_DOWNLOAD_PATH') or os.getenv('FIRMA_DOWNLOAD_PATH') or '/functions/v1/signing-request-api/signing-requests/{document_id}/download').strip(),
+        certificate_download_path=(
+            os.getenv('FIRMA_CERTIFICATE_DOWNLOAD_PATH')
+            or '/functions/v1/signing-request-api/signing-requests/{document_id}/certificate/download'
+        ).strip(),
         reminders_path=(os.getenv('FIRMA_REMINDERS_PATH') or '/functions/v1/signing-request-api/signing-requests/{document_id}/reminders').strip(),
 
         webhooks_path=(os.getenv('FIRMA_WEBHOOKS_PATH') or '/functions/v1/signing-request-api/webhooks').strip(),
@@ -177,18 +184,16 @@ class FirmaAPIService:
         if self.config.base_url.endswith('example.invalid'):
             raise FirmaApiError('FIRMA_BASE_URL is not configured for real API usage')
 
-        # Firma API expects base64-encoded PDF in JSON payload
         import base64
         base64_pdf = base64.b64encode(pdf_bytes).decode('utf-8')
         
         url = self._url(self.config.upload_path)
         
-        # Create signing request with embedded document and recipients
-        # IMPORTANT: Recipients must be included at creation time for Firma to process them
+        
         payload = {
             'name': document_name,
             'document': base64_pdf,
-            'recipients': recipients or []  # Add recipients upfront
+            'recipients': recipients or []  
         }
         
         # Add signature fields if provided (percentage-based positioning required)
@@ -319,7 +324,7 @@ class FirmaAPIService:
         # Firma returns: {id, status, recipients: [{email, status, signed_at, ...}, ...]}
 
         status_value = status_data.get('status')
-        
+
         recipients = status_data.get('recipients') or []
 
         # Determine completion.
@@ -327,10 +332,14 @@ class FirmaAPIService:
         is_completed = False
         if isinstance(status_value, dict) and bool(status_value.get('finished')):
             is_completed = True
-        elif recipients:
-            signed_count = sum(1 for r in recipients if str(r.get('status') or '').lower() == 'completed')
-            total_count = len(recipients)
-            is_completed = signed_count == total_count and total_count > 0
+        else:
+            vendor_status_str = str(status_value or '').strip().lower()
+            if vendor_status_str in {'finished', 'completed', 'complete', 'signed'}:
+                is_completed = True
+            elif recipients:
+                signed_count = sum(1 for r in recipients if str(r.get('status') or '').lower() in {'completed', 'finished'})
+                total_count = len(recipients)
+                is_completed = signed_count == total_count and total_count > 0
 
         # Firma may return status as a string OR as an object of boolean flags.
         # Keep a raw string for debugging, but normalize using structure when available.
@@ -361,15 +370,21 @@ class FirmaAPIService:
                 # If there are recipients but it's not sent/finished yet, treat as in progress.
                 normalized_status = 'in_progress' if recipients else 'draft'
         else:
-            if is_completed or raw_status_lc in {'completed', 'complete', 'signed'}:
+            # Firma public docs (v01.05.00) uses:
+            # not_sent | in_progress | finished | cancelled | declined | expired | deleted
+            if is_completed or raw_status_lc in {'finished', 'completed', 'complete', 'signed'}:
                 normalized_status = 'completed'
-            elif raw_status_lc in {'draft', 'created'}:
+            elif raw_status_lc in {'not_sent', 'draft', 'created'}:
                 normalized_status = 'draft'
             elif raw_status_lc in {'sent', 'emailed'}:
                 normalized_status = 'sent'
-            elif 'declin' in raw_status_lc or 'reject' in raw_status_lc or any('declin' in str(r.get('status') or '').lower() for r in recipients):
+            elif raw_status_lc in {'in_progress'}:
+                normalized_status = 'in_progress'
+            elif raw_status_lc in {'declined'} or 'declin' in raw_status_lc or 'reject' in raw_status_lc or any(
+                'declin' in str(r.get('status') or '').lower() for r in recipients
+            ):
                 normalized_status = 'declined'
-            elif 'fail' in raw_status_lc or 'error' in raw_status_lc:
+            elif raw_status_lc in {'cancelled', 'expired'} or 'fail' in raw_status_lc or 'error' in raw_status_lc:
                 normalized_status = 'failed'
             else:
                 normalized_status = 'in_progress'
@@ -380,9 +395,47 @@ class FirmaAPIService:
             'raw_status': raw_status,
             'is_completed': is_completed,
             'recipients': recipients,
-            'created_at': status_data.get('created_at'),
-            'completed_at': status_data.get('completed_at'),
+            # Timestamp fields vary across vendor API versions
+            'created_at': status_data.get('created_at') or status_data.get('date_created'),
+            'sent_at': status_data.get('sent_at') or status_data.get('date_sent'),
+            'completed_at': status_data.get('completed_at') or status_data.get('date_finished'),
+            'expires_at': status_data.get('expires_at'),
         }
+
+    def _download_presigned_pdf(self, presigned_url: str) -> bytes:
+        """Download a PDF from a pre-signed URL.
+
+        Firma returns time-limited signed URLs like `document_url` and
+        `final_document_download_url`. These typically do not require the Firma
+        API key, but we retry with auth headers if access is denied.
+        """
+        if not presigned_url:
+            raise FirmaApiError('Missing pre-signed download URL')
+
+        try:
+            resp = requests.get(presigned_url, timeout=self.config.timeout_seconds, allow_redirects=True)
+        except requests.RequestException as e:
+            raise FirmaApiError(f'Final document download failed: {e}') from e
+
+        if resp.status_code in (401, 403):
+            try:
+                resp = requests.get(
+                    presigned_url,
+                    headers={'Authorization': self.config.api_key},
+                    timeout=self.config.timeout_seconds,
+                    allow_redirects=True,
+                )
+            except requests.RequestException as e:
+                raise FirmaApiError(f'Final document download failed: {e}') from e
+
+        if resp.status_code < 200 or resp.status_code >= 300:
+            raise FirmaApiError(
+                f'Final document download failed (HTTP {resp.status_code})',
+                status_code=resp.status_code,
+                response_text=(resp.text or '')[:2000],
+            )
+
+        return resp.content
 
     def get_signing_request_details(self, document_id: str) -> Dict[str, Any]:
         """Fetch the raw signing-request object (includes vendor certificate/status fields)."""
@@ -516,6 +569,57 @@ class FirmaAPIService:
             # In mock mode, we don't have a vendor PDF. Callers should fall back to stored original.
             return b''
 
-        url = self._url(self.config.download_path.format(document_id=document_id))
-        resp = self._request('GET', url)
-        return resp.content
+        # Firma's documented API returns a pre-signed `document_url` on GET /signing-requests/{id}.
+        # There is no stable `/download` endpoint.
+        details = self.get_signing_request_details(document_id)
+        presigned_url = details.get('document_url')
+        if not presigned_url:
+            raise FirmaApiError('Firma did not return document_url for this signing request')
+        return self._download_presigned_pdf(str(presigned_url))
+
+    def download_executed_document(self, document_id: str) -> bytes:
+        """Download the executed/signed PDF for a signing request.
+
+        Per Firma docs (v01.05.00), the signed PDF is exposed via a time-limited
+        `final_document_download_url` field on the signing request object (not a
+        `/download` API route).
+        """
+        if self.config.mock_mode:
+            return b''
+
+        details = self.get_signing_request_details(document_id)
+        final_url = details.get('final_document_download_url')
+        final_err = details.get('final_document_download_error')
+        if final_err:
+            raise FirmaApiError(f'Firma final document is not accessible: {final_err}')
+        if not final_url:
+            raise FirmaApiError('Final signed document is not available yet (final_document_download_url missing)')
+
+        return self._download_presigned_pdf(str(final_url))
+
+    def download_certificate(self, document_id: str) -> bytes:
+        """Download the completion certificate / audit trail PDF.
+
+        Firma's current public API exposes the final signed PDF (with certificate)
+        via `final_document_download_url`. There is no stable separate
+        `/certificate/download` route.
+        """
+        if self.config.mock_mode:
+            return b''
+
+        details = self.get_signing_request_details(document_id)
+        cert = details.get('certificate') or {}
+        if isinstance(cert, dict):
+            if cert.get('has_error'):
+                raise FirmaApiError('Firma certificate generation failed')
+            if cert.get('generated') is False:
+                raise FirmaApiError('Firma certificate is not generated yet')
+
+        final_url = details.get('final_document_download_url')
+        final_err = details.get('final_document_download_error')
+        if final_err:
+            raise FirmaApiError(f'Firma final document is not accessible: {final_err}')
+        if not final_url:
+            raise FirmaApiError('Final document (with certificate) is not available yet (final_document_download_url missing)')
+
+        return self._download_presigned_pdf(str(final_url))
