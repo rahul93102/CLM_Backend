@@ -16,6 +16,50 @@ from .models import User
 from .otp_service import OTPService
 from tenants.models import TenantModel
 import uuid
+import os
+import logging
+
+try:
+    from google.oauth2 import id_token as google_id_token
+    from google.auth.transport import requests as google_requests
+except Exception:  # pragma: no cover
+    google_id_token = None
+    google_requests = None
+
+
+logger = logging.getLogger(__name__)
+
+
+def _resolve_tenant_id_for_email(email: str):
+    tenant_id = None
+
+    email_domain = (email.split('@', 1)[1] if '@' in email else '').strip().lower()
+    if email_domain:
+        tenant = TenantModel.objects.filter(domain=email_domain).first()
+        if tenant:
+            tenant_id = tenant.id
+
+    if tenant_id is None:
+        tenant = TenantModel.objects.filter(status='active').order_by('created_at').first()
+        if tenant:
+            tenant_id = tenant.id
+
+    if tenant_id is None:
+        base_domain = email_domain or 'tenant.local'
+        domain = base_domain
+        suffix = 1
+        while TenantModel.objects.filter(domain=domain).exists():
+            suffix += 1
+            domain = f"{base_domain}-{suffix}"
+        tenant = TenantModel.objects.create(
+            name=f"Tenant {domain}",
+            domain=domain,
+            status='active',
+            subscription_plan='free',
+        )
+        tenant_id = tenant.id
+
+    return tenant_id
 
 
 class TokenView(APIView):
@@ -310,6 +354,128 @@ class VerifyEmailOTPView(APIView):
             }, status=status.HTTP_200_OK)
         except User.DoesNotExist:
             return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
+
+
+class GoogleLoginView(APIView):
+    """POST /api/auth/google/ - Login/register with Google ID token (credential)"""
+    permission_classes = [AllowAny]
+    throttle_scope = 'auth'
+
+    def post(self, request):
+        if google_id_token is None or google_requests is None:
+            return Response(
+                {'error': 'Google auth not configured on server'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        credential = request.data.get('credential') or request.data.get('id_token')
+        if not credential:
+            return Response({'error': 'Google credential required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        primary_client_id = getattr(settings, 'GOOGLE_CLIENT_ID', None) or os.getenv('GOOGLE_CLIENT_ID')
+        extra_client_ids_raw = os.getenv('GOOGLE_CLIENT_IDS', '')
+        extra_client_ids = [c.strip() for c in extra_client_ids_raw.split(',') if c.strip()]
+        client_ids = [c for c in [primary_client_id, *extra_client_ids] if c]
+        if not client_ids:
+            return Response(
+                {'error': 'GOOGLE_CLIENT_ID not set on server'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        try:
+            info = None
+            last_error = None
+            for client_id in client_ids:
+                try:
+                    info = google_id_token.verify_oauth2_token(
+                        credential,
+                        google_requests.Request(),
+                        client_id,
+                        clock_skew_in_seconds=10,
+                    )
+                    break
+                except Exception as e:
+                    last_error = e
+                    continue
+
+            if not info:
+                if last_error:
+                    logger.warning('Google token verification failed', exc_info=last_error)
+                if getattr(settings, 'DEBUG', False) and last_error:
+                    return Response(
+                        {
+                            'error': f'Invalid Google token: {last_error}',
+                            'detail': str(last_error),
+                        },
+                        status=status.HTTP_401_UNAUTHORIZED,
+                    )
+                return Response({'error': 'Invalid Google token'}, status=status.HTTP_401_UNAUTHORIZED)
+        except Exception as e:
+            logger.exception('Unexpected error verifying Google token')
+            if getattr(settings, 'DEBUG', False):
+                return Response(
+                    {
+                        'error': f'Invalid Google token: {e}',
+                        'detail': str(e),
+                    },
+                    status=status.HTTP_401_UNAUTHORIZED,
+                )
+            return Response({'error': 'Invalid Google token'}, status=status.HTTP_401_UNAUTHORIZED)
+
+        email = (info.get('email') or '').strip().lower()
+        email_verified = bool(info.get('email_verified'))
+        if not email:
+            return Response({'error': 'Google account email not available'}, status=status.HTTP_400_BAD_REQUEST)
+        if not email_verified:
+            return Response({'error': 'Google email not verified'}, status=status.HTTP_400_BAD_REQUEST)
+
+        given_name = (info.get('given_name') or '').strip()
+        family_name = (info.get('family_name') or '').strip()
+
+        user, _created = User.objects.get_or_create(
+            email=email,
+            defaults={
+                'first_name': given_name,
+                'last_name': family_name,
+                'tenant_id': _resolve_tenant_id_for_email(email),
+                'is_active': True,
+            },
+        )
+
+        if not user.is_active:
+            user.is_active = True
+            user.save(update_fields=['is_active'])
+
+        refresh = RefreshToken.for_user(user)
+        is_admin = bool(user.is_staff or user.is_superuser)
+        is_superadmin = bool(user.is_superuser)
+        refresh['email'] = user.email
+        refresh['tenant_id'] = str(user.tenant_id)
+        refresh['is_admin'] = is_admin
+        refresh['is_superadmin'] = is_superadmin
+        access = refresh.access_token
+        access['email'] = user.email
+        access['tenant_id'] = str(user.tenant_id)
+        access['is_admin'] = is_admin
+        access['is_superadmin'] = is_superadmin
+
+        user.last_login = timezone.now()
+        user.save(update_fields=['last_login'])
+
+        return Response(
+            {
+                'access': str(access),
+                'refresh': str(refresh),
+                'user': {
+                    'user_id': str(user.user_id),
+                    'email': user.email,
+                    'tenant_id': str(user.tenant_id),
+                    'is_admin': is_admin,
+                    'is_superadmin': is_superadmin,
+                },
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 class ForgotPasswordView(APIView):

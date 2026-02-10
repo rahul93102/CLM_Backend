@@ -15,11 +15,13 @@ from .views import (
     ResendPasswordResetOTPView,
     RequestLoginOTPView,
     VerifyEmailOTPView,
+    GoogleLoginView,
 )
 
 urlpatterns = [
     path('login/', TokenView.as_view(), name='login'),
     path('register/', RegisterView.as_view(), name='register'),
+    path('google/', GoogleLoginView.as_view(), name='google_login'),
     path('me/', CurrentUserView.as_view(), name='current_user'),
     path('token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
     path('forgot-password/', ForgotPasswordView.as_view(), name='forgot_password'),
