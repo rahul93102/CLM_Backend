@@ -1,0 +1,86 @@
+:root{
+  --clm-card: rgba(255,255,255,0.06);
+  --clm-card2: rgba(255,255,255,0.08);
+  --clm-border: rgba(255,255,255,0.10);
+  --clm-text: rgba(255,255,255,0.92);
+  --clm-muted: rgba(255,255,255,0.62);
+}
+
+body, input, select, textarea {
+  font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+}
+
+.clm-brand a{ font-weight: 700; letter-spacing: .2px; }
+.clm-subtitle{ margin-left: 10px; font-size: 12px; opacity: .65; }
+
+.clm-dashboard{ margin-top: 12px; }
+
+.clm-grid{
+  display: grid;
+  grid-template-columns: repeat(12, 1fr);
+  gap: 14px;
+}
+
+.clm-card{
+  grid-column: span 4;
+  background: linear-gradient(180deg, var(--clm-card2), var(--clm-card));
+  border: 1px solid var(--clm-border);
+  border-radius: 16px;
+  overflow: hidden;
+  box-shadow: 0 12px 24px rgba(0,0,0,0.18);
+  transition: transform .18s ease, box-shadow .18s ease;
+}
+
+.clm-card:hover{
+  transform: translateY(-2px);
+  box-shadow: 0 18px 36px rgba(0,0,0,0.22);
+}
+
+.clm-card-wide{ grid-column: span 8; }
+
+.clm-card-header{
+  padding: 14px 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.clm-card-title{
+  font-weight: 700;
+  font-size: 14px;
+  color: var(--clm-text);
+}
+
+.clm-card-subtitle{
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--clm-muted);
+}
+
+.clm-card-body{ padding: 6px 12px 14px 12px; }
+.clm-chart{ min-height: 240px; }
+
+.clm-kpis{ display: flex; gap: 10px; }
+.clm-kpi{ padding: 8px 10px; border: 1px solid var(--clm-border); border-radius: 12px; background: rgba(0,0,0,0.10); }
+.clm-kpi-label{ font-size: 11px; color: var(--clm-muted); }
+.clm-kpi-value{ font-size: 16px; font-weight: 700; color: var(--clm-text); }
+
+.clm-list{ display: grid; gap: 10px; padding: 6px 2px; }
+.clm-list-item{
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid var(--clm-border);
+  border-radius: 12px;
+  background: rgba(0,0,0,0.10);
+}
+.clm-pill{ font-size: 11px; padding: 3px 8px; border-radius: 999px; border: 1px solid var(--clm-border); color: var(--clm-muted); }
+.clm-item-name{ font-weight: 600; color: var(--clm-text); font-size: 12px; }
+.clm-item-meta{ display:flex; gap: 8px; align-items:center; }
+
+@media (max-width: 1200px){
+  .clm-card{ grid-column: span 12; }
+  .clm-card-wide{ grid-column: span 12; }
+}

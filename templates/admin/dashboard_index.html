@@ -1,0 +1,99 @@
+{% extends "admin/index.html" %}
+{% load static %}
+
+{% block content %}
+  <div class="clm-dashboard">
+    {{ dashboard|json_script:"dashboard-data" }}
+
+    <div class="clm-grid">
+      <div class="clm-card clm-card-wide">
+        <div class="clm-card-header">
+          <div>
+            <div class="clm-card-title">SaaS Engagement</div>
+            <div class="clm-card-subtitle">Month-wise users, uploads, and searches</div>
+          </div>
+          <div class="clm-kpis">
+            <div class="clm-kpi">
+              <div class="clm-kpi-label">Users</div>
+              <div class="clm-kpi-value" id="kpi-users">—</div>
+            </div>
+            <div class="clm-kpi">
+              <div class="clm-kpi-label">Uploads</div>
+              <div class="clm-kpi-value" id="kpi-uploads">—</div>
+            </div>
+            <div class="clm-kpi">
+              <div class="clm-kpi-label">Searches</div>
+              <div class="clm-kpi-value" id="kpi-searches">—</div>
+            </div>
+          </div>
+        </div>
+        <div class="clm-card-body">
+          <div id="chart-engagement" class="clm-chart"></div>
+        </div>
+      </div>
+
+      <div class="clm-card">
+        <div class="clm-card-header">
+          <div>
+            <div class="clm-card-title">Executive Insights</div>
+            <div class="clm-card-subtitle">AI adoption (last 30 days)</div>
+          </div>
+        </div>
+        <div class="clm-card-body">
+          <div id="chart-ai" class="clm-chart"></div>
+        </div>
+      </div>
+
+      <div class="clm-card">
+        <div class="clm-card-header">
+          <div>
+            <div class="clm-card-title">Feature Breakdown</div>
+            <div class="clm-card-subtitle">Last 30 days usage</div>
+          </div>
+        </div>
+        <div class="clm-card-body">
+          <div id="chart-features" class="clm-chart"></div>
+        </div>
+      </div>
+
+      <div class="clm-card">
+        <div class="clm-card-header">
+          <div>
+            <div class="clm-card-title">Popular Templates</div>
+            <div class="clm-card-subtitle">Most used</div>
+          </div>
+        </div>
+        <div class="clm-card-body">
+          <div id="popular-templates" class="clm-list"></div>
+        </div>
+      </div>
+
+      <div class="clm-card clm-card-wide">
+        <div class="clm-card-header">
+          <div>
+            <div class="clm-card-title">User Registration</div>
+            <div class="clm-card-subtitle">Month-wise registrations</div>
+          </div>
+        </div>
+        <div class="clm-card-body">
+          <div id="chart-registrations" class="clm-chart"></div>
+        </div>
+      </div>
+
+      <div class="clm-card clm-card-wide">
+        <div class="clm-card-header">
+          <div>
+            <div class="clm-card-title">Feature Usage</div>
+            <div class="clm-card-subtitle">Month-wise usage across key features</div>
+          </div>
+        </div>
+        <div class="clm-card-body">
+          <div id="chart-feature-usage" class="clm-chart"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/apexcharts"></script>
+  <script src="{% static 'admin_dashboard/dashboard.js' %}"></script>
+{% endblock %}

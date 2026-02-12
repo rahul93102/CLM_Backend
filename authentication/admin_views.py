@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from django.db.models import Q
 from django.db.models import Count, Sum, Avg, F, ExpressionWrapper, DurationField
-from django.db.models.functions import TruncMonth
+from django.db.models.functions import TruncDay, TruncMonth
 from django.utils import timezone
 from datetime import timedelta
 from rest_framework.permissions import IsAuthenticated
@@ -245,12 +245,19 @@ class AdminAnalyticsView(APIView):
                 starts.append(base.replace(year=y, month=m))
             return starts
 
+        def last_day_starts(days: int = 7):
+            """Return day-start datetimes for the last N days (inclusive of today)."""
+            if days < 1:
+                days = 1
+            base = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            return [base - timedelta(days=i) for i in range(days - 1, -1, -1)]
+
         month_starts = last_month_starts(6)
         trend_start = month_starts[0]
 
-        def month_bucket_map(qs, date_field: str):
+        def month_bucket_map(qs, date_field: str, start_dt):
             rows = (
-                qs.filter(**{f"{date_field}__gte": trend_start})
+                qs.filter(**{f"{date_field}__gte": start_dt})
                 .exclude(**{date_field: None})
                 .annotate(month=TruncMonth(date_field))
                 .values('month')
@@ -259,10 +266,21 @@ class AdminAnalyticsView(APIView):
             )
             return {r['month'].date().isoformat(): int(r['count']) for r in rows if r.get('month')}
 
-        contracts_by_month = month_bucket_map(contracts_qs, 'created_at')
-        templates_by_month = month_bucket_map(templates_qs, 'created_at')
-        firma_sent_by_month = month_bucket_map(firma_sc_qs, 'sent_at')
-        firma_completed_by_month = month_bucket_map(firma_sc_qs, 'completed_at')
+        def day_bucket_map(qs, date_field: str, start_dt):
+            rows = (
+                qs.filter(**{f"{date_field}__gte": start_dt})
+                .exclude(**{date_field: None})
+                .annotate(day=TruncDay(date_field))
+                .values('day')
+                .annotate(count=Count('id'))
+                .order_by()
+            )
+            return {r['day'].date().isoformat(): int(r['count']) for r in rows if r.get('day')}
+
+        contracts_by_month = month_bucket_map(contracts_qs, 'created_at', trend_start)
+        templates_by_month = month_bucket_map(templates_qs, 'created_at', trend_start)
+        firma_sent_by_month = month_bucket_map(firma_sc_qs, 'sent_at', trend_start)
+        firma_completed_by_month = month_bucket_map(firma_sc_qs, 'completed_at', trend_start)
 
         trends = []
         for d in month_starts:
@@ -274,6 +292,48 @@ class AdminAnalyticsView(APIView):
                 'templates_created': templates_by_month.get(key, 0),
                 'firma_sent': firma_sent_by_month.get(key, 0),
                 'firma_completed': firma_completed_by_month.get(key, 0),
+            })
+
+        # 12-month trends for "Year" filter
+        month_starts_12 = last_month_starts(12)
+        trend_start_12 = month_starts_12[0]
+        contracts_by_month_12 = month_bucket_map(contracts_qs, 'created_at', trend_start_12)
+        templates_by_month_12 = month_bucket_map(templates_qs, 'created_at', trend_start_12)
+        firma_sent_by_month_12 = month_bucket_map(firma_sc_qs, 'sent_at', trend_start_12)
+        firma_completed_by_month_12 = month_bucket_map(firma_sc_qs, 'completed_at', trend_start_12)
+
+        trends_12 = []
+        for d in month_starts_12:
+            key = d.date().isoformat()
+            trends_12.append({
+                'month_start': d.date().isoformat(),
+                'label': d.strftime('%b %Y'),
+                'contracts_created': contracts_by_month_12.get(key, 0),
+                'templates_created': templates_by_month_12.get(key, 0),
+                'firma_sent': firma_sent_by_month_12.get(key, 0),
+                'firma_completed': firma_completed_by_month_12.get(key, 0),
+            })
+
+        # 7-day trends for "Week" filter
+        day_starts = last_day_starts(7)
+        day_trend_start = day_starts[0]
+        contracts_by_day = day_bucket_map(contracts_qs, 'created_at', day_trend_start)
+        templates_by_day = day_bucket_map(templates_qs, 'created_at', day_trend_start)
+        firma_sent_by_day = day_bucket_map(firma_sc_qs, 'sent_at', day_trend_start)
+        firma_completed_by_day = day_bucket_map(firma_sc_qs, 'completed_at', day_trend_start)
+        audit_by_day = day_bucket_map(AuditLogModel.objects.filter(tenant_id=tenant_id), 'created_at', day_trend_start)
+
+        trends_7d = []
+        for d in day_starts:
+            key = d.date().isoformat()
+            trends_7d.append({
+                'day_start': key,
+                'label': d.strftime('%a'),
+                'contracts_created': contracts_by_day.get(key, 0),
+                'templates_created': templates_by_day.get(key, 0),
+                'firma_sent': firma_sent_by_day.get(key, 0),
+                'firma_completed': firma_completed_by_day.get(key, 0),
+                'audit_logs': audit_by_day.get(key, 0),
             })
 
         contract_value_agg = contracts_qs.aggregate(total_value=Sum('value'), avg_value=Avg('value'))
@@ -319,6 +379,8 @@ class AdminAnalyticsView(APIView):
             'tenant_id': str(tenant_id),
             'generated_at': now,
             'trends_last_6_months': trends,
+            'trends_last_12_months': trends_12,
+            'trends_last_7_days': trends_7d,
             'users': {
                 'total': users_qs.count(),
                 'active': users_qs.filter(is_active=True).count(),
@@ -379,6 +441,231 @@ class AdminAnalyticsView(APIView):
         }
 
         return Response(payload, status=status.HTTP_200_OK)
+
+
+class AdminFeatureUsageView(APIView):
+    """GET /api/v1/admin/feature-usage/ - feature usage analytics for last 6 months."""
+
+    permission_classes = [IsAuthenticated, IsAdminUser]
+
+    def get(self, request):
+        tenant_id = getattr(request.user, 'tenant_id', None)
+        if not tenant_id:
+            return Response({'error': 'tenant_id missing from token; please re-login'}, status=status.HTTP_400_BAD_REQUEST)
+
+        now = timezone.now()
+        last_6_months = now - timedelta(days=180)
+
+        # Feature usage by entity type over time
+        feature_data = (
+            AuditLogModel.objects.filter(
+                tenant_id=tenant_id,
+                created_at__gte=last_6_months
+            )
+            .annotate(month=TruncMonth('created_at'))
+            .values('month', 'entity_type')
+            .annotate(count=Count('id'))
+            .order_by('month', 'entity_type')
+        )
+
+        # Aggregate by month
+        month_features = {}
+        for item in feature_data:
+            month_key = item['month'].date().isoformat() if item['month'] else None
+            entity_type = item['entity_type'] or 'unknown'
+            if month_key:
+                if month_key not in month_features:
+                    month_features[month_key] = {}
+                month_features[month_key][entity_type] = item['count']
+
+        # Top features by total usage
+        top_features_data = (
+            AuditLogModel.objects.filter(
+                tenant_id=tenant_id,
+                created_at__gte=last_6_months
+            )
+            .values('entity_type')
+            .annotate(total_usage=Count('id'), unique_users=Count('user_id', distinct=True))
+            .order_by('-total_usage')
+        )
+
+        top_features = [
+            {
+                'feature': item['entity_type'] or 'unknown',
+                'total_usage': item['total_usage'],
+                'unique_users': item['unique_users'],
+                'avg_per_user': round(item['total_usage'] / item['unique_users'], 2) if item['unique_users'] > 0 else 0
+            }
+            for item in top_features_data[:10]
+        ]
+
+        # User feature preferences (top users by feature usage)
+        user_feature_data = (
+            AuditLogModel.objects.filter(
+                tenant_id=tenant_id,
+                created_at__gte=last_6_months
+            )
+            .values('user_id', 'entity_type')
+            .annotate(count=Count('id'))
+            .order_by('-count')[:100]
+        )
+
+        users_with_activity = (
+            AuditLogModel.objects.filter(
+                tenant_id=tenant_id,
+                created_at__gte=last_6_months
+            )
+            .values('user_id')
+            .distinct()
+            .count()
+        )
+        total_active_users = User.objects.filter(tenant_id=tenant_id, is_active=True).count()
+        adoption_rate = round((users_with_activity / total_active_users * 100) if total_active_users > 0 else 0, 2)
+
+        return Response({
+            'month_features': month_features,
+            'top_features': top_features,
+            'user_feature_usage': list(user_feature_data),
+            'users_with_activity': users_with_activity,
+            'total_active_users': total_active_users,
+            'adoption_rate': adoption_rate,
+        }, status=status.HTTP_200_OK)
+
+
+class AdminUserRegistrationView(APIView):
+    """GET /api/v1/admin/user-registration/ - user registration trends for last 6 months."""
+
+    permission_classes = [IsAuthenticated, IsAdminUser]
+
+    def get(self, request):
+        tenant_id = getattr(request.user, 'tenant_id', None)
+        if not tenant_id:
+            return Response({'error': 'tenant_id missing from token; please re-login'}, status=status.HTTP_400_BAD_REQUEST)
+
+        now = timezone.now()
+        last_6_months = now - timedelta(days=180)
+
+        # User registration by month
+        users_by_month = (
+            User.objects.filter(
+                tenant_id=tenant_id,
+                date_joined__gte=last_6_months
+            )
+            .annotate(month=TruncMonth('date_joined'))
+            .values('month')
+            .annotate(count=Count('user_id'), active_count=Count('user_id', filter=Q(is_active=True)))
+            .order_by('month')
+        )
+
+        registration_data = []
+        for item in users_by_month:
+            if item['month']:
+                registration_data.append({
+                    'month': item['month'].date().isoformat(),
+                    'label': item['month'].strftime('%b %Y'),
+                    'registered': item['count'],
+                    'active': item['active_count']
+                })
+
+        # Additional stats
+        total_registered = User.objects.filter(tenant_id=tenant_id).count()
+        total_active = User.objects.filter(tenant_id=tenant_id, is_active=True).count()
+        registered_last_30d = User.objects.filter(
+            tenant_id=tenant_id,
+            date_joined__gte=now - timedelta(days=30)
+        ).count()
+
+        return Response({
+            'registration_data': registration_data,
+            'total_registered': total_registered,
+            'total_active': total_active,
+            'registered_last_30d': registered_last_30d,
+            'active_percentage': round((total_active / total_registered * 100) if total_registered > 0 else 0, 2)
+        }, status=status.HTTP_200_OK)
+
+
+class AdminUserFeatureUsageView(APIView):
+    """GET /api/v1/admin/user-feature-usage/ - individual user feature usage."""
+
+    permission_classes = [IsAuthenticated, IsAdminUser]
+
+    def get(self, request):
+        tenant_id = getattr(request.user, 'tenant_id', None)
+        if not tenant_id:
+            return Response({'error': 'tenant_id missing from token; please re-login'}, status=status.HTTP_400_BAD_REQUEST)
+
+        now = timezone.now()
+        last_6_months = now - timedelta(days=180)
+
+        # Get all users and their feature usage
+        users_with_activity = (
+            AuditLogModel.objects.filter(
+                tenant_id=tenant_id,
+                created_at__gte=last_6_months
+            )
+            .values('user_id')
+            .annotate(total_actions=Count('id'))
+            .order_by('-total_actions')
+        )
+
+        user_ids = [item['user_id'] for item in users_with_activity[:20]]
+        users = User.objects.filter(user_id__in=user_ids)
+        user_map = {str(u.user_id): u for u in users}
+
+        users_list = []
+        for item in users_with_activity[:20]:
+            user_id = item['user_id']
+            user_obj = user_map.get(str(user_id))
+            if user_obj:
+                # Get feature breakdown for this user
+                user_features = (
+                    AuditLogModel.objects.filter(
+                        tenant_id=tenant_id,
+                        user_id=user_id,
+                        created_at__gte=last_6_months
+                    )
+                    .values('entity_type')
+                    .annotate(count=Count('id'))
+                    .order_by('-count')
+                )
+
+                users_list.append({
+                    'user_id': str(user_id),
+                    'email': user_obj.email,
+                    'name': f"{user_obj.first_name} {user_obj.last_name}".strip() or 'Unknown',
+                    'total_actions': item['total_actions'],
+                    'features_used': list(user_features[:5])
+                })
+
+        # Feature usage distribution across all users
+        all_user_features = (
+            AuditLogModel.objects.filter(
+                tenant_id=tenant_id,
+                created_at__gte=last_6_months
+            )
+            .values('entity_type')
+            .annotate(count=Count('id'), unique_users=Count('user_id', distinct=True))
+            .order_by('-count')
+        )
+
+        total_active = User.objects.filter(tenant_id=tenant_id, is_active=True).count()
+
+        feature_distribution = [
+            {
+                'feature': item['entity_type'] or 'unknown',
+                'usage_count': item['count'],
+                'user_count': item['unique_users'],
+                'adoption_rate': round((item['unique_users'] / total_active * 100)) if total_active > 0 else 0
+            }
+            for item in all_user_features
+        ]
+
+        return Response({
+            'top_users': users_list,
+            'feature_distribution': feature_distribution,
+            'total_users': total_active,
+            'period': '6_months'
+        }, status=status.HTTP_200_OK)
 
 
 class AdminActivityView(APIView):

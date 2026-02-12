@@ -1,0 +1,21 @@
+{% extends "admin/base.html" %}
+{% load static %}
+
+{% block title %}{{ site_title|default:_('Django site admin') }}{% endblock %}
+
+{% block extrahead %}
+  {{ block.super }}
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{% static 'admin_dashboard/dashboard.css' %}">
+{% endblock %}
+
+{% block branding %}
+  <div id="site-name" class="clm-brand">
+    <a href="{% url 'admin:index' %}">CLM Governance</a>
+    <span class="clm-subtitle">Admin</span>
+  </div>
+{% endblock %}
+
+{% block nav-global %}{% endblock %}

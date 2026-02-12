@@ -5,13 +5,14 @@ from django.contrib import admin
 from django.urls import path, include
 
 from clm_backend.metrics import metrics_view
+from clm_backend.admin_site import admin_site
 
 from rest_framework.routers import DefaultRouter
 
 router = DefaultRouter()
 
 urlpatterns = [
-    path('admin/', admin.site.urls),
+    path('admin/', admin_site.urls),
     path('metrics', metrics_view),
     path('api/auth/', include('authentication.urls')),
     path('api/v1/admin/', include('authentication.admin_urls')),
