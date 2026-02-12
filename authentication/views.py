@@ -372,7 +372,21 @@ class GoogleLoginView(APIView):
         if not credential:
             return Response({'error': 'Google credential required'}, status=status.HTTP_400_BAD_REQUEST)
 
-        primary_client_id = getattr(settings, 'GOOGLE_CLIENT_ID', None) or os.getenv('GOOGLE_CLIENT_ID')
+        def _clean(v):
+            if v is None:
+                return None
+            v = str(v).strip()
+            return v or None
+
+        # Support multiple env var names for smoother deployments.
+        # Backend uses GOOGLE_CLIENT_ID; frontend uses NEXT_PUBLIC_GOOGLE_CLIENT_ID.
+        # Some deployments may have legacy/typo keys as well.
+        primary_client_id = (
+            _clean(getattr(settings, 'GOOGLE_CLIENT_ID', None))
+            or _clean(os.getenv('GOOGLE_CLIENT_ID'))
+            or _clean(os.getenv('NEXT_PUBLIC_GOOGLE_CLIENT_ID'))
+            or _clean(os.getenv('Google_reidirect'))
+        )
         extra_client_ids_raw = os.getenv('GOOGLE_CLIENT_IDS', '')
         extra_client_ids = [c.strip() for c in extra_client_ids_raw.split(',') if c.strip()]
         client_ids = [c for c in [primary_client_id, *extra_client_ids] if c]

@@ -15,6 +15,16 @@ _contracts_env = BASE_DIR / 'contracts' / '.env'
 if _contracts_env.exists():
     load_dotenv(dotenv_path=_contracts_env, override=False)
 
+# Google OAuth (used by POST /api/auth/google/)
+# Normalize env vars so deployments that only set NEXT_PUBLIC_GOOGLE_CLIENT_ID still work server-side.
+if not (os.getenv('GOOGLE_CLIENT_ID') or '').strip():
+    fallback_client_id = (os.getenv('NEXT_PUBLIC_GOOGLE_CLIENT_ID') or os.getenv('Google_reidirect') or '').strip()
+    if fallback_client_id:
+        os.environ['GOOGLE_CLIENT_ID'] = fallback_client_id
+
+GOOGLE_CLIENT_ID = (os.getenv('GOOGLE_CLIENT_ID') or '').strip() or None
+GOOGLE_CLIENT_IDS = (os.getenv('GOOGLE_CLIENT_IDS') or '').strip()
+
 SECRET_KEY = os.getenv('DJANGO_SECRET_KEY', 'django-insecure-dev-key-12345')
 
 DEBUG = os.getenv('DEBUG', 'False').strip().lower() in ('1', 'true', 'yes', 'y', 'on')
