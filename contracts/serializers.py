@@ -23,6 +23,24 @@ class ContractTemplateSerializer(serializers.ModelSerializer):
         return super().create(validated_data)
 
 
+class ContractTemplateListSerializer(serializers.ModelSerializer):
+    """Small payload serializer for listing contract templates."""
+
+    class Meta:
+        model = ContractTemplate
+        fields = [
+            'id',
+            'name',
+            'contract_type',
+            'description',
+            'version',
+            'status',
+            'created_at',
+            'updated_at',
+        ]
+        read_only_fields = fields
+
+
 class ClauseSerializer(serializers.ModelSerializer):
     class Meta:
         model = Clause
@@ -54,6 +72,31 @@ class ContractSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'tenant_id', 'created_by', 'created_at', 'updated_at']
 
 
+class ContractListSerializer(serializers.ModelSerializer):
+    """Small payload serializer for listing contracts.
+
+    Intentionally excludes large fields like `metadata` (often contains rendered_html),
+    `clauses`, and `signed_pdf` (binary) to keep list responses fast.
+    """
+
+    class Meta:
+        model = Contract
+        fields = [
+            'id',
+            'title',
+            'contract_type',
+            'status',
+            'value',
+            'counterparty',
+            'start_date',
+            'end_date',
+            'last_edited_at',
+            'created_at',
+            'updated_at',
+        ]
+        read_only_fields = fields
+
+
 class ContractVersionSerializer(serializers.ModelSerializer):
     class Meta:
         model = ContractVersion
@@ -69,8 +112,8 @@ class ContractClauseSerializer(serializers.ModelSerializer):
 
 class ContractDetailSerializer(serializers.ModelSerializer):
     latest_version = serializers.SerializerMethodField()
-    rendered_text = serializers.SerializerMethodField()
-    rendered_html = serializers.SerializerMethodField()
+    # rendered_text/rendered_html are stored in `metadata`.
+    # Avoid duplicating large payloads at the top-level.
     
     class Meta:
         model = Contract
@@ -88,8 +131,6 @@ class ContractDetailSerializer(serializers.ModelSerializer):
             'user_instructions',
             'clauses',
             'metadata',
-            'rendered_text',
-            'rendered_html',
             'is_approved',
             'approved_by',
             'approved_at',
@@ -107,17 +148,7 @@ class ContractDetailSerializer(serializers.ModelSerializer):
         except ContractVersion.DoesNotExist:
             return None
 
-    def get_rendered_text(self, obj):
-        try:
-            return (obj.metadata or {}).get('rendered_text')
-        except Exception:
-            return None
-
-    def get_rendered_html(self, obj):
-        try:
-            return (obj.metadata or {}).get('rendered_html')
-        except Exception:
-            return None
+    # rendered_text/rendered_html intentionally omitted from API response fields.
 
 
 class GenerationJobSerializer(serializers.ModelSerializer):

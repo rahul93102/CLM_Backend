@@ -5,6 +5,7 @@ import uuid
 
 from django.conf import settings
 from django.db.models import Q
+from django.db.models.functions import Length, Substr
 from django.utils import timezone
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
@@ -27,16 +28,28 @@ def _best_effort_index_template_for_tenant(*, tenant_id: uuid.UUID, filename: st
         from search.models import SearchIndexModel
         from search.services import SearchIndexingService
 
-        tmpl = TemplateFile.objects.filter(filename=filename).first()
-        if not tmpl:
+        # Fetch only what we need; never pull the full content for indexing.
+        row = (
+            TemplateFile.objects.filter(filename=filename)
+            .annotate(
+                _content_prefix=Substr('content', 1, 20000),
+                _content_size=Length('content'),
+            )
+            .values('filename', 'name', 'contract_type', 'updated_at', '_content_prefix', '_content_size')
+            .first()
+        )
+        if not row:
             return
 
+        updated_at = row.get('updated_at')
         try:
-            updated_at_epoch = float(tmpl.updated_at.timestamp()) if tmpl.updated_at else None
+            updated_at_epoch = float(updated_at.timestamp()) if updated_at else None
         except Exception:
             updated_at_epoch = None
+
+        size = row.get('_content_size')
         try:
-            size = len((tmpl.content or '').encode('utf-8'))
+            size = int(size) if size is not None else None
         except Exception:
             size = None
 
@@ -57,15 +70,15 @@ def _best_effort_index_template_for_tenant(*, tenant_id: uuid.UUID, filename: st
         ):
             return
 
-        content = tmpl.content or ''
+        content = row.get('_content_prefix') or ''
 
         SearchIndexingService.create_index(
             entity_type='template',
             entity_id=str(entity_id),
-            title=(tmpl.name or _display_name_from_filename(filename)),
+            title=((row.get('name') or '') or _display_name_from_filename(filename)),
             content=(content or '')[:20000],
             tenant_id=str(tenant_id),
-            keywords=[tmpl.contract_type or _infer_template_type(filename)],
+            keywords=[(row.get('contract_type') or _infer_template_type(filename))],
             metadata={
                 'source': 'template_files_db',
                 'filename': filename,
@@ -75,6 +88,32 @@ def _best_effort_index_template_for_tenant(*, tenant_id: uuid.UUID, filename: st
         )
     except Exception:
         return
+
+
+def _parse_int(value, default: int) -> int:
+    try:
+        v = int(str(value).strip())
+        return v
+    except Exception:
+        return default
+
+
+def _paginate(request, qs, *, default_page_size: int = 50, max_page_size: int = 200):
+    """Basic pagination helper for APIViews."""
+    page = _parse_int(request.query_params.get('page'), 1)
+    if page < 1:
+        page = 1
+
+    page_size = _parse_int(request.query_params.get('page_size'), default_page_size)
+    if page_size < 1:
+        page_size = default_page_size
+    page_size = min(page_size, max_page_size)
+
+    total = qs.count()
+    start = (page - 1) * page_size
+    end = start + page_size
+    items = list(qs[start:end])
+    return page, page_size, total, items
 
 
 def _template_queryset_for_request(request):
@@ -154,10 +193,10 @@ class TemplateFilesView(APIView):
         return [AllowAny()]
 
     def get(self, request):
-        templates = list(_template_queryset_for_request(request).order_by('-updated_at'))
+        qs = _template_queryset_for_request(request).defer('content', 'signature_fields_config', 'meta').order_by('-updated_at')
 
         # Transitional compatibility: if DB is empty, import legacy filesystem templates.
-        if not templates:
+        if not qs.exists():
             try:
                 tenant_id = None
                 if getattr(request.user, 'is_authenticated', False):
@@ -169,19 +208,14 @@ class TemplateFilesView(APIView):
                         if isinstance(fn, str) and fn.lower().endswith('.txt'):
                             get_or_import_template_from_filesystem(filename=fn, tenant_id=tenant_id)
 
-                templates = list(_template_queryset_for_request(request).order_by('-updated_at'))
+                qs = _template_queryset_for_request(request).defer('content', 'signature_fields_config', 'meta').order_by('-updated_at')
             except Exception:
                 pass
 
-        # Best-effort: keep the tenant's template search index warm.
-        try:
-            if getattr(request.user, 'is_authenticated', False) and getattr(request.user, 'tenant_id', None):
-                tenant_id = request.user.tenant_id
-                # Keep it bounded; index the most-recent N.
-                for tmpl in templates[:50]:
-                    _best_effort_index_template_for_tenant(tenant_id=tenant_id, filename=tmpl.filename)
-        except Exception:
-            pass
+        # Keep the list endpoint fast: don't auto-index here.
+        # Indexing is done on create/update and on-demand.
+
+        page, page_size, total, templates = _paginate(request, qs, default_page_size=50, max_page_size=200)
 
         results = []
         for tmpl in templates:
@@ -200,7 +234,16 @@ class TemplateFilesView(APIView):
                 }
             )
 
-        return Response({"success": True, "count": len(results), "results": results}, status=status.HTTP_200_OK)
+        return Response(
+            {
+                "success": True,
+                "count": total,
+                "page": page,
+                "page_size": page_size,
+                "results": results,
+            },
+            status=status.HTTP_200_OK,
+        )
 
     def post(self, request):
         name = (request.data.get("name") or "").strip()
@@ -287,8 +330,12 @@ class TemplateMyFilesView(APIView):
                 q |= Q(created_by_email=email)
             qs = qs.filter(q)
 
+        qs = qs.defer('content', 'signature_fields_config', 'meta').order_by('-updated_at')
+
+        page, page_size, total, templates = _paginate(request, qs, default_page_size=50, max_page_size=200)
+
         results = []
-        for tmpl in qs.order_by('-updated_at'):
+        for tmpl in templates:
             results.append(
                 {
                     "id": tmpl.filename,
@@ -304,7 +351,16 @@ class TemplateMyFilesView(APIView):
                 }
             )
 
-        return Response({"success": True, "count": len(results), "results": results}, status=status.HTTP_200_OK)
+        return Response(
+            {
+                "success": True,
+                "count": total,
+                "page": page,
+                "page_size": page_size,
+                "results": results,
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 class TemplateFileContentView(APIView):

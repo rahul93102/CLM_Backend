@@ -113,6 +113,14 @@ DB_ENGINE = 'django.db.backends.postgresql'
 DB_HOST = os.getenv('DB_HOST', '')
 DB_PORT = os.getenv('DB_PORT', '5432')
 
+# Supabase pooler guidance:
+# - Session pooler is typically port 5432 and has a small fixed pool_size.
+# - Transaction pooler is typically port 6543 and is the recommended option for Django.
+# This project defaults to transaction mode when using the pooler host, unless explicitly overridden.
+DB_POOLER_MODE = (os.getenv('DB_POOLER_MODE', '') or '').strip().lower()  # 'transaction' | 'session'
+DB_POOLER_TRANSACTION_PORT = os.getenv('DB_POOLER_TRANSACTION_PORT', '6543')
+DB_POOLER_SESSION_PORT = os.getenv('DB_POOLER_SESSION_PORT', '5432')
+
 
 def _parse_database_url(database_url: str) -> dict:
     """Parse a Postgres DATABASE_URL into Django DATABASES['default'] keys."""
@@ -135,6 +143,14 @@ def _parse_database_url(database_url: str) -> dict:
 
     # Keep compatibility with Supabase pooler constraints.
     using_pooler = 'pooler.supabase.com' in (host or '')
+
+    # If the pooler is used, prefer transaction mode unless explicitly set.
+    # This prevents: "MaxClientsInSessionMode: max clients reached".
+    desired_pool_mode = (os.getenv('DB_POOLER_MODE', '') or '').strip().lower()
+    if using_pooler and not desired_pool_mode:
+        desired_pool_mode = 'transaction'
+    if using_pooler and desired_pool_mode == 'transaction' and port == DB_POOLER_SESSION_PORT:
+        port = DB_POOLER_TRANSACTION_PORT
 
     # Supabase pooler requires the user in the form `postgres.<project_ref>`.
     # If a DATABASE_URL is accidentally set to `postgres@...pooler.supabase.com`,
@@ -183,6 +199,13 @@ def _parse_database_url(database_url: str) -> dict:
 # - If possible, prefer Supabase pooler in TRANSACTION mode (often port 6543 in Supabase UI), and keep CONN_MAX_AGE=0.
 USING_SUPABASE_POOLER = 'pooler.supabase.com' in (DB_HOST or '')
 DEFAULT_CONN_MAX_AGE = 0 if USING_SUPABASE_POOLER else 60
+
+# If we are using Supabase pooler and the port is still set to the session pooler port, automatically
+# flip to transaction pooler port unless the user explicitly requested session mode.
+if USING_SUPABASE_POOLER:
+    _mode = DB_POOLER_MODE or 'transaction'
+    if _mode == 'transaction' and str(DB_PORT) == DB_POOLER_SESSION_PORT:
+        DB_PORT = DB_POOLER_TRANSACTION_PORT
 
 DATABASES = {
     'default': {

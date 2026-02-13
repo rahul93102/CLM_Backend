@@ -41,8 +41,8 @@ from .models import (
     ContractEditingStep, ContractEdits, ContractFieldValidationRule
 )
 from .serializers import (
-    ContractSerializer, ContractDetailSerializer, ContractDecisionSerializer,
-    WorkflowLogSerializer, ContractTemplateSerializer, ClauseSerializer,
+    ContractSerializer, ContractListSerializer, ContractDetailSerializer, ContractDecisionSerializer,
+    WorkflowLogSerializer, ContractTemplateSerializer, ContractTemplateListSerializer, ClauseSerializer,
     ContractVersionSerializer, GenerationJobSerializer,
     ContractGenerateSerializer, ContractApproveSerializer,
     ContractEditingSessionSerializer, ContractEditingSessionDetailSerializer,
@@ -340,14 +340,23 @@ class ContractTemplateViewSet(viewsets.ModelViewSet):
     API endpoint for contract templates
     """
     permission_classes = [IsAuthenticated]
-    serializer_class = ContractTemplateSerializer
+
+    def get_serializer_class(self):
+        if getattr(self, 'action', None) == 'list':
+            return ContractTemplateListSerializer
+        return ContractTemplateSerializer
     
     def get_queryset(self):
         tenant_id = self.request.user.tenant_id
-        return ContractTemplate.objects.filter(
+        qs = ContractTemplate.objects.filter(
             tenant_id=tenant_id,
             status='published'
         )
+
+        if getattr(self, 'action', None) == 'list':
+            return qs.defer('merge_fields', 'mandatory_clauses', 'business_rules').order_by('-updated_at')
+
+        return qs.order_by('-updated_at')
     
     def get_serializer_context(self):
         context = super().get_serializer_context()
@@ -653,6 +662,8 @@ class ContractViewSet(viewsets.ModelViewSet):
     parser_classes = [MultiPartParser, FormParser, JSONParser]
     
     def get_serializer_class(self):
+        if self.action == 'list':
+            return ContractListSerializer
         if self.action == 'retrieve':
             return ContractDetailSerializer
         elif self.action == 'generate':
@@ -706,7 +717,28 @@ class ContractViewSet(viewsets.ModelViewSet):
     
     def get_queryset(self):
         tenant_id = self.request.user.tenant_id
-        return Contract.objects.filter(tenant_id=tenant_id)
+        qs = Contract.objects.filter(tenant_id=tenant_id)
+
+        # Contract list endpoints should be fast and small. Defer large/binary columns
+        # so Postgres/Django don't pull them over the wire.
+        if getattr(self, 'action', None) == 'list':
+            return (
+                qs.defer(
+                    'signed_pdf',
+                    'metadata',
+                    'clauses',
+                    'form_inputs',
+                    'user_instructions',
+                    'approval_chain',
+                    'current_approvers',
+                    'signed',
+                    'description',
+                    'document_r2_key',
+                )
+                .order_by('-updated_at')
+            )
+
+        return qs
     
     def perform_create(self, serializer):
         """Set tenant_id and created_by when creating a contract"""
