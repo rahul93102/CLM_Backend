@@ -161,39 +161,48 @@ class DashboardInsightsView(APIView):
             raw = (r.get('contract_type') or '').strip()
             contract_types.append({'type': raw or 'Unspecified', 'count': int(r.get('count') or 0)})
 
-        # -------------------- AI usage (Draft generation tasks) --------------------
-        ai_rows = (
+        # -------------------- AI usage (Contract generation vs Review) --------------------
+        # IMPORTANT:
+        # The dashboard KPI "AI Generations Used" should represent contract generation usage
+        # (Template/AI Builder) backed by DraftGenerationTask. Review uses AI too, but it's
+        # reported separately so it doesn't inflate contract-generation metrics.
+
+        contract_ai_rows = (
             DraftGenerationTask.objects.filter(tenant_id=tenant_id, user_id=user_id, created_at__gte=since_180d)
             .values('status')
             .annotate(count=Count('id'))
             .order_by('-count')
         )
-        ai_status_map: dict[str, int] = {}
-        for r in ai_rows:
+        contract_ai_status_map: dict[str, int] = {}
+        for r in contract_ai_rows:
             s = (r.get('status') or 'unknown')
-            ai_status_map[s] = ai_status_map.get(s, 0) + int(r.get('count') or 0)
+            contract_ai_status_map[s] = contract_ai_status_map.get(s, 0) + int(r.get('count') or 0)
 
-        # Review feature invokes AI (Gemini/Voyage) but does not currently create DraftGenerationTask rows.
-        # Fold review pipeline counts into AI usage so the dashboard updates for real usage.
+        ai_by_status = [
+            {'status': s, 'count': int(c)}
+            for s, c in sorted(contract_ai_status_map.items(), key=lambda kv: kv[1], reverse=True)
+        ]
+
         review_ai_rows = (
             ReviewContract.objects.filter(tenant_id=tenant_id, created_by=user_id, created_at__gte=since_180d)
             .values('status')
             .annotate(count=Count('id'))
         )
-        status_map = {
+        review_status_map = {
             'uploaded': 'pending',
             'processing': 'processing',
             'ready': 'completed',
             'failed': 'failed',
         }
+        review_ai_status_map: dict[str, int] = {}
         for r in review_ai_rows:
             raw = (r.get('status') or 'unknown')
-            mapped = status_map.get(raw, 'unknown')
-            ai_status_map[mapped] = ai_status_map.get(mapped, 0) + int(r.get('count') or 0)
+            mapped = review_status_map.get(raw, 'unknown')
+            review_ai_status_map[mapped] = review_ai_status_map.get(mapped, 0) + int(r.get('count') or 0)
 
-        ai_by_status = [
+        review_ai_by_status = [
             {'status': s, 'count': int(c)}
-            for s, c in sorted(ai_status_map.items(), key=lambda kv: kv[1], reverse=True)
+            for s, c in sorted(review_ai_status_map.items(), key=lambda kv: kv[1], reverse=True)
         ]
 
         # -------------------- Review stats --------------------
@@ -281,6 +290,7 @@ class DashboardInsightsView(APIView):
                 'activity_last_14_days': activity_last_14_days,
                 'contract_types_180d': contract_types,
                 'ai_tasks_by_status_180d': ai_by_status,
+                'review_ai_tasks_by_status_180d': review_ai_by_status,
                 'reviews_by_status_180d': reviews_by_status,
                 'calendar_by_category_180d': calendar_by_category,
                 'calendar_upcoming_30d': int(upcoming_30d),

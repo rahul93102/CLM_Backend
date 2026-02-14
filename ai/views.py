@@ -244,6 +244,29 @@ class AIViewSet(viewsets.ViewSet):
 
         model_name = getattr(settings, 'GEMINI_CONTRACT_EDIT_MODEL', None) or 'gemini-2.5-pro'
 
+        # Track AI Builder generations for dashboard insights.
+        # The template-based AI editor uses this endpoint (streaming edits), so we
+        # create a DraftGenerationTask record per request.
+        task = None
+        try:
+            task = DraftGenerationTask.objects.create(
+                tenant_id=request.user.tenant_id,
+                user_id=request.user.user_id,
+                contract_type=(contract_type or 'template_edit'),
+                input_params={
+                    'mode': 'template_stream',
+                    'prompt_length': len(prompt),
+                    'current_text_length': len(current_text or ''),
+                    'model': model_name,
+                },
+                template_id=None,
+                task_id=f"sse-{uuid.uuid4()}",
+                status='processing',
+                started_at=timezone.now(),
+            )
+        except Exception:
+            task = None
+
         # Retrieve relevant clauses using Voyage Law-2.
         def _pick_relevant_clauses() -> list[dict]:
             try:
@@ -335,7 +358,10 @@ Relevant clause library (optional):
 
         def event_stream():
             try:
-                yield f"event: meta\ndata: {json.dumps({'model': model_name})}\n\n"
+                payload = {'model': model_name}
+                if task is not None:
+                    payload['task_id'] = task.task_id
+                yield f"event: meta\ndata: {json.dumps(payload)}\n\n"
             except Exception:
                 pass
 
@@ -346,8 +372,29 @@ Relevant clause library (optional):
                     if not delta:
                         continue
                     yield f"event: delta\ndata: {json.dumps({'delta': delta})}\n\n"
+
+                if task is not None:
+                    try:
+                        task.status = 'completed'
+                        task.completed_at = timezone.now()
+                        task.citations = [c.get('clause_id') for c in (relevant or []) if c.get('clause_id')]
+                        task.save(update_fields=['status', 'completed_at', 'citations', 'updated_at'])
+                    except Exception:
+                        pass
                 yield f"event: done\ndata: {json.dumps({'ok': True})}\n\n"
+            except GeneratorExit:
+                # Client disconnected early; keep status as-is (processing) so
+                # the generation is still counted for usage KPIs.
+                raise
             except Exception as e:
+                if task is not None:
+                    try:
+                        task.status = 'failed'
+                        task.error_message = str(e)[:4000]
+                        task.completed_at = timezone.now()
+                        task.save(update_fields=['status', 'error_message', 'completed_at', 'updated_at'])
+                    except Exception:
+                        pass
                 yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
 
         resp = StreamingHttpResponse(event_stream(), content_type='text/event-stream')
