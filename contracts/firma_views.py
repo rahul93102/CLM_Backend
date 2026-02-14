@@ -38,6 +38,32 @@ from django.conf import settings
 logger = logging.getLogger(__name__)
 
 
+def _is_admin_like(user) -> bool:
+   try:
+       if getattr(user, 'is_superuser', False) or getattr(user, 'is_staff', False):
+           return True
+   except Exception:
+       pass
+   for attr in ('is_admin', 'is_superadmin'):
+       try:
+           if getattr(user, attr, False):
+               return True
+       except Exception:
+           pass
+   return False
+
+
+def _user_id_str(user) -> str:
+   for key in ('user_id', 'id', 'pk'):
+       try:
+           v = getattr(user, key, None)
+           if v:
+               return str(v)
+       except Exception:
+           continue
+   return ''
+
+
 def _safe_template_filename(name: str) -> str | None:
    base = os.path.basename(str(name or '').strip())
    base = base.replace('\\', '').replace('/', '')
@@ -1428,6 +1454,58 @@ def firma_list_signing_requests(request):
            'success': True,
            'count': len(results),
            'results': results,
+       },
+       status=status.HTTP_200_OK,
+   )
+
+
+@api_view(['DELETE'])
+@permission_classes([IsAuthenticated])
+def firma_delete_signing_request(request, record_id: str):
+   """Delete (remove) a Firma signing request record for this tenant.
+
+   Note: This deletes the local tracking record (FirmaSignatureContract + related signers/audit logs).
+   Vendor-side cancellation is not guaranteed by Firma APIs; this endpoint focuses on removing the
+   request from the CLM dashboard while keeping the underlying Contract intact.
+   """
+
+   tenant_id = getattr(request.user, 'tenant_id', None)
+   rec = get_object_or_404(
+       FirmaSignatureContract.objects.select_related('contract'),
+       id=record_id,
+       contract__tenant_id=tenant_id,
+   )
+
+   # Ownership guard: non-admin users may only delete signing requests for contracts they created.
+   if not _is_admin_like(request.user):
+       if str(getattr(rec.contract, 'created_by', '')) != _user_id_str(request.user):
+           return Response({'error': 'Not allowed to delete this signing request'}, status=status.HTTP_403_FORBIDDEN)
+
+   # Prevent deleting completed signing requests (keeps auditability + avoids confusion).
+   if str(getattr(rec, 'status', '')).lower() == 'completed':
+       return Response({'error': 'Cannot delete a completed signing request'}, status=status.HTTP_409_CONFLICT)
+
+   # Best-effort: if vendor reports completed, block deletion.
+   try:
+       service = _get_firma_service()
+       status_info = service.get_document_status(rec.firma_document_id)
+       is_completed = bool(status_info.get('is_completed') or str(status_info.get('status') or '').lower() == 'completed')
+       if is_completed:
+           return Response({'error': 'Signing request is completed; cannot delete'}, status=status.HTTP_409_CONFLICT)
+   except Exception:
+       # Status checks are best-effort; still allow local deletion if we cannot reach vendor.
+       pass
+
+   contract_id = str(rec.contract_id)
+   firma_document_id = str(rec.firma_document_id)
+   rec.delete()
+
+   return Response(
+       {
+           'success': True,
+           'deleted': True,
+           'contract_id': contract_id,
+           'firma_document_id': firma_document_id,
        },
        status=status.HTTP_200_OK,
    )

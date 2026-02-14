@@ -50,6 +50,32 @@ print(f"  Tenant: {tenant.name}")
 print(f"  Is Staff: {user.is_staff}")
 print(f"  Is Superuser: {user.is_superuser}")
 
+# Create/Update Rahul admin user
+rahul, _rahul_created = User.objects.get_or_create(
+    email="rahuljha93102@gmail.com",
+    defaults={
+        "first_name": "Rahul",
+        "last_name": "Jha",
+        "is_staff": True,
+        "is_superuser": True,
+        "is_active": True,
+        "tenant_id": tenant.id,
+    },
+)
+
+rahul.is_staff = True
+rahul.is_superuser = True
+rahul.is_active = True
+rahul.tenant_id = tenant.id
+rahul.set_password("Admin@123")
+rahul.save()
+
+print(f"\n✓ Admin user: {rahul.email}")
+print(f"  Password: Admin@123")
+print(f"  Tenant: {tenant.name}")
+print(f"  Is Staff: {rahul.is_staff}")
+print(f"  Is Superuser: {rahul.is_superuser}")
+
 # Create test user
 test_user, created = User.objects.get_or_create(
     email="user@clm.local",

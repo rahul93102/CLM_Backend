@@ -62,6 +62,25 @@ def _resolve_tenant_id_for_email(email: str):
     return tenant_id
 
 
+def _bootstrap_admin_if_enabled(user: User) -> None:
+    """Best-effort: promote allowlisted emails to staff in dev/staging."""
+    try:
+        if not bool(getattr(settings, 'ENABLE_BOOTSTRAP_ADMINS', False)):
+            return
+        allow = getattr(settings, 'BOOTSTRAP_ADMIN_EMAILS', None)
+        if not allow:
+            return
+        email = (getattr(user, 'email', '') or '').strip().lower()
+        if not email or email not in set(allow):
+            return
+        if not getattr(user, 'is_staff', False):
+            user.is_staff = True
+            user.save(update_fields=['is_staff'])
+    except Exception:
+        # Never block auth flows on bootstrap promotion.
+        return
+
+
 class TokenView(APIView):
     """POST /api/auth/login/ - Authenticate user and generate JWT token"""
     permission_classes = [AllowAny]
@@ -99,6 +118,8 @@ class TokenView(APIView):
                 },
                 status=status.HTTP_403_FORBIDDEN,
             )
+
+        _bootstrap_admin_if_enabled(user)
         
         refresh = RefreshToken.for_user(user)
         # Embed commonly needed claims so downstream requests don't require a DB lookup.
@@ -199,6 +220,8 @@ class RegisterView(APIView):
         )
         user.set_password(password)
         user.save()
+
+        _bootstrap_admin_if_enabled(user)
 
         # Send OTP for email verification (account remains inactive until verified)
         otp_result = OTPService.send_email_otp(user.email)
@@ -459,6 +482,8 @@ class GoogleLoginView(APIView):
         if not user.is_active:
             user.is_active = True
             user.save(update_fields=['is_active'])
+
+        _bootstrap_admin_if_enabled(user)
 
         refresh = RefreshToken.for_user(user)
         is_admin = bool(user.is_staff or user.is_superuser)

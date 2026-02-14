@@ -30,6 +30,29 @@ SECRET_KEY = os.getenv('DJANGO_SECRET_KEY', 'django-insecure-dev-key-12345')
 
 DEBUG = os.getenv('DEBUG', 'False').strip().lower() in ('1', 'true', 'yes', 'y', 'on')
 
+# Bootstrap admin promotion (dev/staging convenience)
+#
+# When enabled, users whose email matches BOOTSTRAP_ADMIN_EMAILS will be promoted
+# to staff (admin) automatically at login/register. Keep disabled in production
+# unless you explicitly want this behavior.
+ENABLE_BOOTSTRAP_ADMINS = (
+    os.getenv('ENABLE_BOOTSTRAP_ADMINS', 'False').strip().lower() in ('1', 'true', 'yes', 'y', 'on')
+    or DEBUG
+)
+
+_bootstrap_admin_emails_raw = os.getenv('BOOTSTRAP_ADMIN_EMAILS', '').strip()
+BOOTSTRAP_ADMIN_EMAILS = {
+    e.strip().lower()
+    for e in _bootstrap_admin_emails_raw.split(',')
+    if e.strip()
+}
+
+# Project default bootstrap admin(s) for local/dev usage.
+# If you don't want any hardcoded emails, set BOOTSTRAP_ADMIN_EMAILS in env and/or disable ENABLE_BOOTSTRAP_ADMINS.
+BOOTSTRAP_ADMIN_EMAILS |= {
+    'rahuljha93102@gmail.com',
+}
+
 # Supabase API configuration (distinct from Postgres DB settings)
 SUPABASE_URL = (os.getenv('SUPABASE_URL') or '').strip() or None
 SUPABASE_ANON_KEY = (os.getenv('SUPABASE_ANON_KEY') or '').strip() or None

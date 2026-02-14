@@ -80,6 +80,7 @@ urlpatterns = [
     path('firma/esign/invite-all/', firma_views.firma_invite_all, name='firma_invite_all'),
     path('firma/esign/signing-url/<str:contract_id>/', firma_views.firma_get_signing_url, name='firma_get_signing_url'),
     path('firma/esign/requests/', firma_views.firma_list_signing_requests, name='firma_list_signing_requests'),
+    path('firma/esign/requests/<uuid:record_id>/', firma_views.firma_delete_signing_request, name='firma_delete_signing_request'),
     path('firma/esign/status/<str:contract_id>/', firma_views.firma_check_status, name='firma_check_status'),
     path('firma/esign/executed/<str:contract_id>/', firma_views.firma_get_executed_document, name='firma_get_executed_document'),
     path('firma/esign/certificate/<str:contract_id>/', firma_views.firma_get_certificate_document, name='firma_get_certificate_document'),
