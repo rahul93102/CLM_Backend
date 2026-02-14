@@ -225,6 +225,11 @@ class SecurityHeadersMiddleware(MiddlewareMixin):
             if request.path.startswith('/api/auth/'):
                 response.headers.setdefault('Cache-Control', 'no-store')
                 response.headers.setdefault('Pragma', 'no-cache')
+
+                # Avoid breaking popup-based OAuth flows that rely on window.opener/postMessage.
+                # (Some browsers warn/block postMessage when COOP is too strict.)
+                response.headers.setdefault('Cross-Origin-Opener-Policy', 'same-origin-allow-popups')
+                response.headers.setdefault('Cross-Origin-Embedder-Policy', 'unsafe-none')
         except Exception:
             # Never break response pipeline for headers.
             pass

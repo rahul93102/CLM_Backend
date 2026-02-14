@@ -365,7 +365,9 @@ CORS_ALLOWED_ORIGINS = [
     "http://127.0.0.1:3001",
     "http://localhost:4000",
     "http://127.0.0.1:4000",
-    "http://localhost:8000",
+    "https://lawflow-267708864896.asia-south1.run.app",
+    # Production - Netlify
+    "https://verdant-douhua-1148be.netlify.app",
     "http://127.0.0.1:8000",
     # Production - Render
     "http://127.0.0.1:8000",
@@ -373,6 +375,15 @@ CORS_ALLOWED_ORIGINS = [
     "http://localhost",
     "http://127.0.0.1",
 ]
+
+# Allow adding more CORS origins via env without code changes.
+# Example:
+#   CORS_ALLOWED_ORIGINS_EXTRA=https://<your-site>.netlify.app,https://<your-site>.vercel.app
+_cors_extra = os.getenv('CORS_ALLOWED_ORIGINS_EXTRA', '').strip()
+if _cors_extra:
+    for _origin in [o.strip() for o in _cors_extra.split(',') if o.strip()]:
+        if _origin not in CORS_ALLOWED_ORIGINS:
+            CORS_ALLOWED_ORIGINS.append(_origin)
 
 # Alternative: Allow all origins (use with caution in production)
 # CORS_ALLOW_ALL_ORIGINS = True
