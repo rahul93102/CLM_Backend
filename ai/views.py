@@ -365,13 +365,83 @@ Relevant clause library (optional):
             except Exception:
                 pass
 
+            def _extract_text_from_chunk(chunk) -> str:
+                """Extract text from a streamed Gemini chunk without relying on quick accessors.
+
+                Some library versions raise when accessing `.text` if no valid Part exists
+                (e.g., safety-blocked responses). We treat those chunks as empty.
+                """
+                # 1) Try the common accessor, but it may raise.
+                try:
+                    t = chunk.text  # type: ignore[attr-defined]
+                    if isinstance(t, str) and t:
+                        return t
+                except Exception:
+                    pass
+
+                # 2) Fallback: walk candidates/parts.
+                try:
+                    candidates = getattr(chunk, 'candidates', None) or []
+                    for cand in candidates:
+                        content = getattr(cand, 'content', None)
+                        parts = getattr(content, 'parts', None) or []
+                        for part in parts:
+                            pt = getattr(part, 'text', None)
+                            if isinstance(pt, str) and pt:
+                                return pt
+                except Exception:
+                    pass
+
+                return ''
+
+            def _safety_summary_from_chunk(chunk) -> str:
+                try:
+                    candidates = getattr(chunk, 'candidates', None) or []
+                    if not candidates:
+                        return ''
+
+                    # Collect category:probability style info when available.
+                    bits: list[str] = []
+                    for cand in candidates:
+                        ratings = getattr(cand, 'safety_ratings', None) or []
+                        for r in ratings:
+                            cat = getattr(r, 'category', None)
+                            prob = getattr(r, 'probability', None)
+                            # category/probability can be enums; stringify safely.
+                            if cat is not None and prob is not None:
+                                bits.append(f"{cat}:{prob}")
+                    # De-dupe while preserving order.
+                    seen = set()
+                    out: list[str] = []
+                    for b in bits:
+                        if b in seen:
+                            continue
+                        seen.add(b)
+                        out.append(b)
+                    return ', '.join(out[:12])
+                except Exception:
+                    return ''
+
             try:
                 model = genai.GenerativeModel(model_name)
+                any_delta = False
+                last_chunk = None
+
                 for chunk in model.generate_content(generation_prompt, stream=True):
-                    delta = getattr(chunk, 'text', None)
+                    last_chunk = chunk
+                    delta = _extract_text_from_chunk(chunk)
                     if not delta:
                         continue
+                    any_delta = True
                     yield f"event: delta\ndata: {json.dumps({'delta': delta})}\n\n"
+
+                if not any_delta:
+                    safety = _safety_summary_from_chunk(last_chunk) if last_chunk is not None else ''
+                    msg = 'AI returned no text output.'
+                    if safety:
+                        msg = 'AI response appears to be blocked by safety filters.'
+                        msg += f" Safety ratings: {safety}."
+                    raise RuntimeError(msg)
 
                 if task is not None:
                     try:
@@ -395,7 +465,12 @@ Relevant clause library (optional):
                         task.save(update_fields=['status', 'error_message', 'completed_at', 'updated_at'])
                     except Exception:
                         pass
-                yield f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n"
+                # Return a clean error message to the client (avoid leaking SDK internals).
+                raw = str(e) if e else 'AI generation failed'
+                cleaned = raw
+                if 'response.text' in raw and 'candidate.safety_ratings' in raw:
+                    cleaned = 'AI response was blocked by safety filters. Try rephrasing your instruction.'
+                yield f"event: error\ndata: {json.dumps({'error': cleaned})}\n\n"
 
         resp = StreamingHttpResponse(event_stream(), content_type='text/event-stream')
         resp['Cache-Control'] = 'no-cache'
